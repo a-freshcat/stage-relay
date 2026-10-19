@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "codex_command": ["codex"],
+  "planner": {
+    "model": "gpt-6.1-sol",
+    "endpoint": {"codex_provider": "custom", "native_auth": true},
+    "timeout_seconds": 600,
+    "max_requests": 30,
+    "persist": "handoff_only"
+  },
+  "worker": {
+    "model": "ccs-deepseek/deepseek-flash",
+    "endpoint": {"codex_provider": "custom", "native_auth": true},
+    "timeout_seconds": 900,
+    "max_requests": 80
+  },
+  "limits": {"max_fix_rounds": 2, "max_replans": 1},
+  "checks": {},
+  "budget": {"hard_cap_usd": null}
+}

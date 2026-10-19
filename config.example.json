@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "review": true,
+  "codex_command": ["codex"],
+  "planner": {
+    "model": "gpt-6.1-sol",
+    "endpoint": {"codex_provider": "custom"},
+    "timeout_seconds": 600,
+    "max_requests": 30,
+    "persist": "handoff_only"
+  },
+  "worker": {
+    "model": "ccs-deepseek/deepseek-flash",
+    "endpoint": {"codex_provider": "custom"},
+    "timeout_seconds": 900,
+    "max_requests": 80
+  },
+  "limits": {
+    "max_fix_rounds": 2,
+    "max_replans": 1,
+    "max_log_bytes": 8000000,
+    "max_result_bytes": 200000,
+    "max_request_bytes": 2000000,
+    "check_timeout_seconds": 120
+  },
+  "checks": {},
+  "budget": {"hard_cap_usd": null}
+}

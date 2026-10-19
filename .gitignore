@@ -1,0 +1,12 @@
+__pycache__/
+runs/
+.locks/
+.test-tmp/
+config.local.json
+*.local.json
+tests-latest.log
+*.settings.lock
+.mcp.json
+relay-smoke-project/
+task-reports/
+diagnostics/

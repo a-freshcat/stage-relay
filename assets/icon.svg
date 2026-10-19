@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Stage Relay</title>
+  <desc id="desc">Two overlapping chat bubbles pass a task in opposite directions.</desc>
+  <rect width="128" height="128" rx="28" fill="#142B38"/>
+  <path d="M32 24h36a14 14 0 0 1 14 14v15a14 14 0 0 1-14 14H44L23 78l6-12a14 14 0 0 1-11-14V38a14 14 0 0 1 14-14Z" fill="#319B76"/>
+  <path d="M60 61h36a14 14 0 0 1 14 14v15a14 14 0 0 1-8 13l6 11-21-10H60a14 14 0 0 1-14-14V75a14 14 0 0 1 14-14Z" fill="#8C6BD1"/>
+  <g fill="none" stroke="#FFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M35 45h29m-8-8 8 8-8 8"/>
+    <path d="M93 82H64m8-8-8 8 8 8"/>
+  </g>
+</svg>
