@@ -26,7 +26,7 @@ HELP = {
     "format_repair_modified_project": ("修复 JSON 报告时项目发生了变化。", "检查项目差异及阶段日志；格式修复应只读，不应重复执行任务。"),
     "timeout": ("本阶段等待超时。", "检查网关响应和进程日志；可在配置中调整该角色的 timeout_seconds。"),
     "request_limit": ("达到配置的请求次数上限。", "检查累计请求记录及对应角色的 max_requests；恢复任务不会清空累计次数。"),
-    "input_limit": ("请求大小超过配置限制。", "检查请求记录和 max_request_bytes 配置。"),
+    "input_limit": ("本地输入大小超过限制；已有改动仍保留。", "核对失败阶段和对应文件。若 requests.jsonl 记录了 request_denied，可在启动配置中将 limits.max_request_bytes 调大或设为 null；先核对已有产物，避免从头重做。历史任务保留原配置，不会自动重跑。"),
     "config_error": ("本地接力配置无效。", "检查配置文件，或在“模型与接口”中重新保存角色配置。"),
     "catalog_error": ("接口模型目录检查失败。", "核对接口地址、凭据和 GET /models 支持情况；此检查未发起生成请求。"),
     "check_modified_project": ("兼容测试的临时样例被改动，检查结果不可信。", "重新运行兼容测试；若反复出现，查看 Codex 是否在样例中写入了文件。"),
@@ -44,6 +44,9 @@ def describe_failure(exc, context=None, logs=None):
                 "timeout" if isinstance(exc, TimeoutError) else
                 "local_io_error" if isinstance(exc, OSError) else "internal_error")
     message, action = HELP.get(code, ("任务在下列阶段失败（" + code + "）。", "查看下列阶段、位置及本地日志，按错误代码检查配置或运行环境。"))
+    if code == "timeout" and context.get("timeout_basis") == "inactivity":
+        message = "模型进程连续未收到输出或接口数据，已停止。"
+        action = "查看最近的进程事件和网关日志；单次模型响应或本地命令需要更久时，可调高该角色的 timeout_seconds。"
     row = {"code": code, "message": message, "action": action,
            "exception": type(exc).__name__, "stage": context.get("stage", "本地任务初始化")}
     for key in ("role", "model", "path", "executable", "phase"):
@@ -51,6 +54,19 @@ def describe_failure(exc, context=None, logs=None):
             row[key] = str(context[key])
     if type(context.get("upstream_status")) is int:
         row["upstream_status"] = context["upstream_status"]
+    if code == "input_limit" and (context.get("request_forwarded") is False or context.get("stage") == "本地请求大小检查"):
+        # A local rejection has no upstream response for the rejected request.
+        row.pop("upstream_status", None)
+        row["stage"] = "本地请求大小检查"
+        row["message"] = "本次请求超过本地大小上限，未发送到上游；已有改动仍保留。"
+        row["request_forwarded"] = False
+        for key in ("local_status", "body_bytes", "limit_bytes"):
+            if type(context.get(key)) is int:
+                row[key] = context[key]
+    if code == "timeout":
+        for key in ("elapsed_seconds", "idle_seconds", "timeout_seconds"):
+            if type(context.get(key)) in (int, float):
+                row[key] = context[key]
     endpoint = context.get("endpoint")
     if endpoint:
         try:

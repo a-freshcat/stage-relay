@@ -22,7 +22,7 @@
     "max_replans": 1,
     "max_log_bytes": 8000000,
     "max_result_bytes": 200000,
-    "max_request_bytes": 2000000,
+    "max_request_bytes": null,
     "check_timeout_seconds": 120
   },
   "checks": {},

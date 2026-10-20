@@ -132,13 +132,32 @@ vm.createContext(ctx);vm.runInContext(source.slice(source.indexOf('function call
  ctx.next={draft:{id:'old',status:'ready',user_request:'回答OK',project:'p1',plan:{goal:'回答OK',steps:[]}}};await ctx.loadDraft();
  assert.equal($('launch-request').value,'回答OK');$('launch-extra').value='旧任务的补充';
  ctx.next={draft:pending};await ctx.loadDraft(true);
- assert.equal($('launch-request').value,pending.user_request);assert.equal($('launch-extra').value,'');assert.equal($('caller-start').disabled,true);
+ assert.equal($('launch-request').value,pending.user_request);assert.equal($('launch-extra').value,'');assert.equal($('launch-start').disabled,true);
+ assert.equal($('launch-start').textContent,'等待 Codex 方案');assert.equal($('caller-copy').hidden,false);
  $('launch-extra').value='新任务的补充';
  ctx.next={draft:{...pending,id:'blocked',status:'blocked',error:{message:'工作目录不正确',action:'使用独立工作目录',code:'unsafe_path'}}};await ctx.loadDraft(true);
- assert.equal($('caller-start').disabled,true);assert.ok(JSON.stringify($('draft-preview')).includes('工作目录不正确'));
+ assert.equal($('launch-start').disabled,true);assert.ok(JSON.stringify($('draft-preview')).includes('工作目录不正确'));
  ctx.next={draft:{...pending,id:'ready',status:'ready',plan:{goal:pending.user_request,steps:['生成SVG']}}};await ctx.loadDraft(true);
- assert.equal($('caller-start').disabled,false);assert.equal($('launch-extra').value,'新任务的补充');
+ assert.equal($('launch-start').disabled,false);assert.equal($('launch-start').textContent,'开始任务');assert.equal($('caller-copy').hidden,true);assert.equal($('launch-extra').value,'新任务的补充');
+ $('launch-extra').value='';ctx.launchMode();assert.equal($('launch-start').disabled,false);
 })().catch(e=>{console.error(e);process.exitCode=1});
 '''
         result = subprocess.run([shutil.which("node") or "node", "-e", script, str(ROOT / "panel/panel.js"), str(ROOT / "panel/compose.js")], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_waiting_plan_is_polled_without_the_idle_history_delay(self):
+        from relaylib.runner import ROOT
+        script = r'''
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync(process.argv[1],'utf8'),els={};
+const $=id=>els[id]||={value:'',replaceChildren(){},append(){}};$('launch-mode').value='caller';
+const ctx={$,Date,node(){return {}},document:{hidden:false},launchEnabled:true,pendingJob:'',currentActive:false,
+ callerDraft:{status:'preparing',plan:null},busy:false,lastAutomaticRefresh:Date.now(),lastDraftCheck:0,
+ current:'',listTick:0,lastDeleted:'',lastDeletedIds:[],runsKey:'',snapshotKey:'',polls:0,
+ loadDraft:async()=>{ctx.polls++;ctx.callerDraft={status:'ready',plan:{goal:'新方案'}}},
+ api:async()=>({runs:[]}),renderHistoryChoices(){},renderFailure(){}};
+vm.createContext(ctx);vm.runInContext(source.slice(source.indexOf('async function refresh('),source.indexOf('$("run").addEventListener')),ctx);
+(async()=>{await ctx.refresh();assert.equal(ctx.polls,1);assert.equal(ctx.callerDraft.status,'ready')})().catch(e=>{console.error(e);process.exitCode=1});
+'''
+        result = subprocess.run([shutil.which("node") or "node", "-e", script, str(ROOT / "panel/panel.js")], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

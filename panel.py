@@ -80,6 +80,33 @@ def json_file(directory, name):
         return {}
 
 
+def request_activity(directory, budget):
+    """Read public request sizes, never bodies; warnings do not stop execution."""
+    path = safe_file(directory, "requests.jsonl")
+    rows = []
+    for line in text_file(directory, "requests.jsonl", limit=256_000, tail=True).splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("event") in ("request_forwarded", "request_denied"):
+            rows.append(row)
+    forwarded = [row for row in rows if row["event"] == "request_forwarded"]
+    count = sum(row.get("forwarded", 0) for row in budget.get("roles", {}).values())
+    latest = next((row for row in reversed(rows) if type(row.get("body_bytes")) is int), {})
+    first = forwarded[0] if forwarded and path and path.stat().st_size <= 256_000 else {}
+    size = latest.get("body_bytes")
+    warnings = []
+    if count >= 10:
+        warnings.append("已累计发送多次模型请求。请核对最近的输出是否仍在推进任务，避免反复做范围外的验证。")
+    if size is not None and size >= 1_000_000:
+        warnings.append("本次上下文较大，可能增加模型等待和费用。此处仅提醒，不会截断输入、减少输出或停止任务。")
+    denied = next((row for row in reversed(rows) if row["event"] == "request_denied" and row.get("reason") == "input_limit"), {})
+    return {"forwarded_requests": count, "last_request_bytes": size,
+            "first_request_bytes": first.get("body_bytes"), "warnings": warnings,
+            "local_rejection": {key: denied[key] for key in ("body_bytes", "limit_bytes", "phase") if key in denied}}
+
+
 def public_events(directory):
     """Bounded public CLI events; do not display reasoning/internal trace items."""
     events, positions, usage = [], {}, []
@@ -106,6 +133,28 @@ def public_events(directory):
             elif item_kind == "file_change":
                 row = {"kind": "files", "text": json.dumps(item.get("changes", []), ensure_ascii=False)[:16_000],
                        "status": item.get("status")}
+            elif item_kind == "mcp_tool_call" and item.get("server") == "cua_repl" and item.get("status") == "completed":
+                # Only expose a capability inventory, never MCP documentation or arbitrary results.
+                inventory = None
+                result = item.get("result")
+                if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+                    continue
+                for content in result["content"]:
+                    if not isinstance(content, dict) or content.get("type") != "text":
+                        continue
+                    if not isinstance(content.get("text"), str):
+                        continue
+                    try:
+                        candidate = json.loads(content.get("text", ""))
+                    except ValueError:
+                        continue
+                    if isinstance(candidate, dict) and isinstance(candidate.get("browsers"), list):
+                        inventory = candidate
+                if inventory is None:
+                    continue
+                available = bool(inventory["browsers"])
+                row = {"kind": "capability", "browser_available": available,
+                       "text": "执行端发现可用浏览器。" if available else "执行端未发现可用浏览器；视觉验证需要交回当前 Codex。"}
             else:
                 continue
             key = item.get("id")
@@ -317,6 +366,12 @@ class Store:
                                  "title": ("审核结论 → " if role == "reviewer" else "执行结果 → ") + receiver, "status": status, "payload": response,
                                  "evidence": f"{path.name}/response.json"})
         budget = json_file(directory, "budget.json")
+        activity = request_activity(directory, budget)
+        if failure and failure.get("code") == "input_limit" and activity["local_rejection"]:
+            # Correct old diagnostics from public audit evidence without rewriting history.
+            context = {**failure, **activity["local_rejection"], "stage": "本地请求大小检查",
+                       "local_status": 413, "request_forwarded": False}
+            failure = describe_failure(RelayError("input_limit", ""), context, failure.get("logs"))
         roles = {}
         for role in ("planner", "worker"):
             spec = config.get(role, {})
@@ -347,6 +402,7 @@ class Store:
                 "can_delete": not self.active(directory),
                 "project": state.get("project", job.get("project")), "updated_at": state.get("updated_at", service.get("time")),
                 "request": request, "roles": roles, "phases": phases,
+                "request_activity": activity,
                 "review_state": state.get("review_state"), "review_cycle": corrections.public_cycle(state),
                 "review_record_wiring": str(ROOT / ".mcp.json"),
                 "correction_history": corrections.history(directory),

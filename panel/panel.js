@@ -95,6 +95,12 @@ const HELP={
     "先看问题中的失败阶段、模型、接口地址和上游状态码。连接失败时启动本地服务并核对端口；401/403 核对接口权限；429 说明上游限制，需要稍后再试或查看供应商说明。",
     "接口正常但任务失败时，点击查看执行记录里的公开错误与详细记录。将具体错误交给原规划端分析；不要仅凭本地 502 推断模型不可用。",
     "恢复任务前先确认有没有部分文件改动，避免重复实施。打开说明和查看记录都不会发送模型请求。"
+  ]},
+  progress:{title:"任务为什么变慢？",lines:[
+    "这里的请求次数和请求大小来自本地转发记录，字节数不是 token 数。提醒只展示已有数据，不调用模型，也不会停止任务。",
+    "如果模型反复调整同一产物、制作额外预览，核对这些步骤是否属于原任务。浏览器不可用时，应保留具体待验证项，交给当前 Codex 检查实际产物。",
+    "工具定义、对话历史和图像都会增加输入。Relay 不设置每秒传输速率；第三方上游可能另有限流，不能由本地接口正常响应推断生成速度。",
+    "失败后先查看项目已有文件，不要直接重做。旧任务保留原始配置；新的默认配置不再附加 2 MB 请求上限，显式配置的上限仍有效。"
   ]}
 };
 function showHelp(topic){const item=HELP[topic]||HELP.residual;$("issue-help-title").textContent=item.title;$("issue-help-content").replaceChildren(...item.lines.map(line=>node("p",line)));$("issue-help-dialog").showModal();}
@@ -109,6 +115,7 @@ async function copyReview(data){
     "任务："+data.request+"\njob_id："+data.job_id+"\n结果版本："+data.review_revision+"\n记录目录："+data.path+"\n"+
     "读取该目录 plan.json、result.json、state.json 中的 validation 和 changes.patch，必要时核对项目文件。区分接力连通、实际任务目标与未运行的测试，不将执行端自报等同测试通过。\n"+
     "逐条核对 residual 提醒：说明具体检查对象、验证方法、预期结果；已解决或与本次范围无关的条目，在 evidence 写出依据，并将其从 0 开始的索引加入 resolved_residual，未解决的不加入。\n"+
+    "若执行端没有可用浏览器而留下视觉验证提醒，请先检查本对话的浏览器集成；可用时打开实际产物验证构图、动画及提醒中的预期行为。不可用时保留未验证状态；不要自制替代渲染器或从 shell 启动浏览器。\n"+
     "不通过时在 change_requests 逐项填写 path、location、problem、requested_change、verification（含预期结果）；回复类任务的 path/location 可留空，不编造行号或命令。\n"+
     "调用 relay_record_review，传入 job_id、result_revision（上述结果版本）、auto_correct:"+auto+" 与 review：status 为 approved / changes_requested / unable_to_verify；summary 为给用户的结论，evidence 为依据数组，issues 为可操作的问题数组，resolved_residual 为已核对关闭的提醒索引数组。\n"+
     (auto?"我允许审核不通过后让原执行模型按意见返修（可能产生模型费用）。工具返回 queued 后使用 relay_wait 等待，读取新的结果版本、回答、测试与差异，并继续由你复审，直到通过、受阻、证据不足或暂停；不能复用旧结果版本，也不能替执行模型声称测试通过。网页无法在对话结束后自行唤醒你。\n":"本次只审核，不启动返修。\n")+
@@ -271,21 +278,32 @@ $("review-use-model").addEventListener("click",async()=>{
 });
 function renderProgress(data){
   const box=$("progress");const live=["running","ready","queued"].includes(data.state)||data.phases.some(p=>p.status==="running");
-  box.hidden=!live;if(!live)return;
+  const activity=data.request_activity;
+  box.hidden=!live&&!activity?.warnings?.length;if(box.hidden)return;
   const phase=currentPhase(data);
   $("progress-stage").replaceWith(Object.assign(badge(phase?phase.status:data.state),{id:"progress-stage"}));
   const host=$("progress-event");host.replaceChildren();
+  if(activity){
+    let metrics="累计模型请求："+activity.forwarded_requests+" 次";
+    if(Number.isFinite(activity.last_request_bytes))metrics+=" · 最近请求："+(activity.last_request_bytes/1024).toFixed(1)+" KiB";
+    if(Number.isFinite(activity.first_request_bytes))metrics+=" · 首次请求："+(activity.first_request_bytes/1024).toFixed(1)+" KiB";
+    host.append(node("p",metrics,"progress-line"));
+    for(const text of activity.warnings||[])host.append(node("p",text,"progress-warning"));
+    if(activity.warnings?.length)host.append(helpButton("progress","查看为何变慢与处理方法"));
+  }
   if(!phase){host.append(node("p","等待本地进程启动，尚无阶段记录。","empty"));return;}
   host.append(node("p","当前阶段："+(roleNames[phase.role]||phase.role)+" · "+phase.id+(phase.status==="running"?" · 检查点显示运行中，进程存活未独立确认":""),"progress-line"));
   const event=(phase.events||[]).at(-1);
   if(event){const preview=event.kind==="command"?"命令："+event.text:event.kind==="files"?"文件修改："+event.text:"公开消息："+event.text;
     host.append(node("pre",preview,"progress-event-text"));}
   else host.append(node("p","暂未记录公开消息或工具事件。","empty"));
+  const browser=(phase.events||[]).filter(e=>e.kind==="capability").at(-1);
+  if(browser?.browser_available===false)host.append(node("p",browser.text+"完成后选择当前 Codex 审核，不能把源码检查当作动画已验证。","progress-warning"));
 }
 function renderFailure(failure, host=$("failure")) {
   host.replaceChildren();host.hidden=!failure;if(!failure)return;
   host.append(node("h3",failure.message||"任务未能完成"));
-  const names={stage:"失败阶段",role:"角色",model:"模型",endpoint:"接口",upstream_status:"上游 HTTP 状态",path:"位置",executable:"程序",exception:"异常类型",errno:"系统错误码",winerror:"Windows 错误码",code:"错误代码"};
+  const names={stage:"失败阶段",role:"角色",model:"模型",endpoint:"接口",upstream_status:"上游 HTTP 状态",local_status:"本地 HTTP 状态",body_bytes:"本次请求大小（字节）",limit_bytes:"已配置上限（字节）",elapsed_seconds:"阶段已运行（秒）",idle_seconds:"连续无活动（秒）",timeout_seconds:"超时阈值（秒）",path:"位置",executable:"程序",exception:"异常类型",errno:"系统错误码",winerror:"Windows 错误码",code:"错误代码"};
   for(const [key,label] of Object.entries(names))if(failure[key]!==undefined)host.append(node("div",label+"："+(key==="role"?(roleNames[failure[key]]||failure[key]):failure[key]),"diagnostic-line"));
   host.append(node("p","处理建议："+(failure.action||"旧记录未保存详细原因，请查看阶段公开错误和本地日志。")));
   if(failure.logs?.length)host.append(node("div","本地记录："+failure.logs.join("\n"),"diagnostic-line"));
@@ -501,7 +519,7 @@ function render(data) {
   const open=new Set([...document.querySelectorAll("details[open]")].map(d=>d.dataset.key).filter(Boolean));
   $("request").textContent=data.request||"尚未记录任务";$("project").textContent=data.project||"";
   document.title=(data.title||"协作面板")+" · Stage Relay";
-  $("delete-run").disabled=historyBusy||!data.can_delete;
+
   renderFailure(data.failure);
   if(data.failure)$("failure").prepend(node("div","所选任务记录 · "+(data.updated_at?new Date(data.updated_at*1000).toLocaleString():data.title),"hint"));
   $("task-state").replaceWith(Object.assign(badge(data.state),{id:"task-state"}));
@@ -517,14 +535,15 @@ function render(data) {
   for(const el of document.querySelectorAll("details"))if(open.has(el.dataset.key))el.open=true;
 }
 async function refresh(force=false){
-  if(!force&&(document.hidden||(!pendingJob&&!currentActive&&Date.now()-lastAutomaticRefresh<10000)))return;
+  const awaitingPlan=launchEnabled&&!pendingJob&&$("launch-mode").value==="caller"&&callerDraft&&!callerDraft.plan&&callerDraft.status!=="blocked";
+  if(!force&&(document.hidden||(!pendingJob&&!currentActive&&!awaitingPlan&&Date.now()-lastAutomaticRefresh<10000)))return;
   if(busy)return;busy=true;
   lastAutomaticRefresh=Date.now();
   try{
     if(launchEnabled&&!pendingJob&&Date.now()-lastDraftCheck>=1000)await loadDraft(true);
     if(pendingJob){const job=await api("api/job/"+pendingJob);current=job.run_id;if(!job.active){$("launch-message").textContent=job.failure?(job.diagnostic?.message||"任务已停止，查看下方具体原因。"):job.status==="user_confirmed"?"你已确认，流程已结束。":"执行已结束。查看回答后，可自行确认结束，或交回原规划端审核。";pendingJob="";launchSignature="";launchKey="";repeatReady=true;listTick=0;launchMode();}else $("launch-message").textContent="任务已提交 · "+(labels[job.status]||job.status)+" · 正在读取交接记录…";}
     if(force||pendingJob||!currentActive||++listTick%4===1){const {runs,last_deleted,last_deleted_ids}=await api("api/runs"),select=$("run"),listKey=JSON.stringify(runs);lastDeleted=last_deleted||"";lastDeletedIds=last_deleted_ids||(lastDeleted?[lastDeleted]:[]);$("undo-delete").hidden=!lastDeletedIds.length;$("undo-delete").textContent="撤销上次删除（"+lastDeletedIds.length+" 条）";if(listKey!==runsKey){select.replaceChildren();for(const r of runs){const option=node("option",(r.mode==="mock"?"[模拟] ":"")+(r.title||r.name)+" · "+(labels[r.status]||r.status));option.value=r.id;option.title=r.name;select.append(option);}renderHistoryChoices(runs);runsKey=listKey;}if(!runs.some(r=>r.id===current)){if(pendingJob){$("notice").textContent="任务已排队，等待本地进程启动…";return;}current=runs[0]?.id||"";snapshotKey="";}select.value=current;}
-    if(!current){currentActive=false;$("notice").textContent="还没有运行记录。填写上方任务，点击开始即可查看目标、结果和问题。";for(const id of ["planner","worker","handoffs","checks","issues","result"])$(id).replaceChildren();$("request").textContent="等待任务记录";$("project").textContent="";$("patch").textContent="";$("task-state").textContent="—";$("issue-count").textContent="0";$("issue-count").className="badge";$("progress").hidden=true;$("delete-run").disabled=true;renderFailure(null);document.title="Stage Relay · 协作面板";return;}
+    if(!current){currentActive=false;$("notice").textContent="还没有运行记录。填写上方任务，点击开始即可查看目标、结果和问题。";for(const id of ["planner","worker","handoffs","checks","issues","result"])$(id).replaceChildren();$("request").textContent="等待任务记录";$("project").textContent="";$("patch").textContent="";$("task-state").textContent="—";$("issue-count").textContent="0";$("issue-count").className="badge";$("progress").hidden=true;renderFailure(null);document.title="Stage Relay · 协作面板";return;}
     const requested=current,data=await api("api/run/"+requested),key=JSON.stringify({...data,observed_at:0});
     if(requested!==current)return;
     currentActive=["queued","running","ready"].includes(data.state);
@@ -552,7 +571,7 @@ $("run-select-all").addEventListener("change",()=>{selectedRuns.clear();if($("ru
 $("delete-selected").addEventListener("click",()=>changeHistory("delete",[...selectedRuns]));
 async function changeHistory(action,selection) {
   const ids=selection||(action==="delete"?(current?[current]:[]):lastDeletedIds);if(!ids.length||historyBusy)return;
-  historyBusy=true;$("delete-run").disabled=true;$("undo-delete").disabled=true;updateHistorySelection();
+  historyBusy=true;$("undo-delete").disabled=true;updateHistorySelection();
   try{
     const response=await fetch(new URL("api/history",document.baseURI),{method:"POST",headers:{"Content-Type":"application/json","X-Relay-Panel":"settings"},body:JSON.stringify({ids,action})});
     const result=await response.json();if(!response.ok)throw new Error(result.error||"任务记录操作失败");
@@ -562,7 +581,6 @@ async function changeHistory(action,selection) {
   }catch(error){$("history-message").textContent=error.message;}
   finally{historyBusy=false;$("undo-delete").disabled=false;updateHistorySelection();await refresh(true);}
 }
-$("delete-run").addEventListener("click",()=>changeHistory("delete"));
 $("undo-delete").addEventListener("click",()=>changeHistory("restore"));
 refresh(true);setInterval(refresh,1500);
 document.addEventListener("visibilitychange",()=>{if(!document.hidden)refresh(true);});
@@ -572,15 +590,16 @@ function callerReady(){try{RelayCompose.callerPlan(callerDraft,$("launch-project
 function launchMode(){
   const mode=$("launch-mode").value;
   $("request-label").hidden=mode==="plan";$("request-title").textContent=mode==="caller"&&callerDraft?(callerDraft.invocation_id?"从当前对话带入的任务":"上次保存的任务（可点击新任务切换）"):mode==="caller"?"给当前 Codex 的任务指示":"给规划模型的任务指示";
-  $("launch-request").readOnly=mode==="caller"&&!!callerDraft?.plan;
-  $("caller-copy").hidden=mode==="caller"&&!!callerDraft?.plan;
+  $("launch-request").readOnly=mode==="caller"&&!!(callerDraft?.invocation_id||callerDraft?.plan);
+  $("caller-copy").hidden=mode==="caller"&&callerReady();
+  $("caller-copy").textContent=callerDraft?.status==="blocked"?"复制修正方案请求":callerDraft?.invocation_id?"方案未就绪？复制继续规划请求":"复制任务给 Codex 规划";
   $("plan-label").hidden=mode!=="plan";$("caller-draft").hidden=mode!=="caller";
   const ready=mode!=="caller"||callerReady();
   $("launch-start").disabled=!launchEnabled||!!pendingJob||!ready;
-  $("launch-start").textContent=pendingJob?"任务进行中…":repeatReady?"再次运行":"开始任务";
-  $("caller-start").disabled=$("launch-start").disabled;
-  $("caller-start").textContent=pendingJob?"任务进行中…":"确认并开始任务";
-  if(mode==="caller")$("caller-note").textContent=callerDraft?.status==="blocked"?"当前任务未准备成功，原因与处理方法见下方。旧方案不会用于这次任务。":callerDraft?.status==="preparing"?"已收到这次任务，当前 Codex 正在准备方案；准备完成后才能开始。":ready?"任务与方案已带入。确认后点“开始任务”即可；需要调整时填写补充要求。":"请在当前 Codex 对话里说明任务并调用插件；任务与方案准备好后会自动带入这里。";
+  $("launch-start").textContent=pendingJob?"任务进行中…":!ready?"等待 Codex 方案":repeatReady?"再次运行":"开始任务";
+  $("launch-start").title=!ready?"方案尚未就绪，面板会自动读取；当前 Codex 停住时可复制继续规划请求。":"";
+  if(mode==="caller")$("caller-note").textContent=callerDraft?.status==="blocked"?"方案准备失败，原因和处理方法见下方。可复制修正请求给当前 Codex。":ready?"方案已就绪。补充要求可选，核对后直接点击下方“开始任务”。":"等待当前 Codex 写入方案，面板会自动读取。正常调用会接着完成规划，无需重复发送任务；若对话已经停住，可复制继续规划请求。";
+  $("caller-note").className="hint caller-plan-status "+(callerDraft?.status==="blocked"?"blocked":ready?"ready":"waiting");
   for(const id of ["launch-worker-provider","launch-worker-model","worker-apply"])$(id).disabled=!!pendingJob;
   updateLaunchModels();
 }
@@ -600,17 +619,19 @@ async function loadDraft(automatic=false){
       loadedDraftGoal=fields.request;loadedDraftId=callerDraft.id||"";
       if(automatic)$("launch-mode").value="caller";
       if(!callerDraft.plan){
-        preview.append(node("p",callerDraft.status==="blocked"?"这次任务准备失败。":"已收到这次任务，正在准备方案。",callerDraft.status==="blocked"?"form-error":"hint"));
+        preview.append(node("p",callerDraft.status==="blocked"?"这次任务准备失败。":"任务已带入，方案尚未写入。就绪后“开始任务”会自动可用，无需点击刷新。",callerDraft.status==="blocked"?"form-error":"hint"));
         if(callerDraft.error){preview.append(node("p",callerDraft.error.message,"form-error"),node("p","处理方法："+callerDraft.error.action),node("small","错误代码："+callerDraft.error.code));}
         if(callerDraft.generated_project)preview.append(node("p","已为这次独立创作任务建立工作目录："+callerDraft.project,"hint"));
         launchMode();return;
       }
-      preview.append(node("p",callerDraft.invocation_id?"已带入本次调用的任务与方案。":"这里显示的是上次保存的任务，可点击新任务切换。","hint"));
-      const task=node("p");task.append(node("strong","这次要做的事："),node("span",callerDraft.plan.goal));preview.append(task);
-      readable(preview,{steps:callerDraft.plan.steps},{stepsInDetails:true});
-      const location=node("details");location.append(node("summary","查看执行目录"),node("p",callerDraft.project,"path"));preview.append(location);
-      const facts=node("details"),constraints=callerDraft.plan.constraints||[];
-      facts.append(node("summary","之前的要求与相关文件（"+constraints.length+" 条要求）"));
+      if(!callerDraft.invocation_id)preview.append(node("p","这里显示的是上次保存的任务，可点击新任务切换。","hint"));
+      const sheet=node("section",undefined,"caller-plan-sheet");
+      const heading=node("div",undefined,"caller-plan-heading");heading.append(node("span","Codex 方案正文","caller-plan-source"),node("span","待你确认","caller-plan-confirm"));sheet.append(heading);
+      sheet.append(node("span","任务目标","caller-plan-label"),node("p",callerDraft.plan.goal,"caller-plan-goal"));
+      readable(sheet,{steps:callerDraft.plan.steps},{stepsInDetails:(callerDraft.plan.steps||[]).length>6});preview.append(sheet);
+      const location=node("details",undefined,"caller-plan-reference");location.append(node("summary","查看执行目录"),node("p",callerDraft.project,"path"));preview.append(location);
+      const facts=node("details",undefined,"caller-plan-reference"),constraints=callerDraft.plan.constraints||[];
+      facts.append(node("summary","执行要求与相关文件（"+constraints.length+" 条要求）"));
       readable(facts,{files:callerDraft.plan.files,decisions:callerDraft.plan.decisions,constraints});
       facts.append(detail("完整任务安排（高级）",callerDraft.plan,"caller-draft-json"));preview.append(facts);
     }else preview.append(node("p","还没有可执行的任务安排。请先把任务发给当前 Codex。","hint"));
@@ -650,7 +671,6 @@ $("launch-worker-model").addEventListener("change",()=>{$("worker-note").textCon
 $("worker-refresh").addEventListener("click",()=>loadWorkerModels(true));
 $("worker-apply").addEventListener("click",async()=>{try{await applyWorker();}catch(error){$("worker-note").textContent=error.message;}});
 $("launch-mode").addEventListener("change",launchMode);
-$("draft-refresh").addEventListener("click",()=>loadDraft(false));
 $("caller-new").addEventListener("click",()=>{
   dismissedDraftId=callerDraft?.id||loadedDraftId;callerDraft=null;loadedDraftGoal="";
   $("launch-request").value="";$("launch-extra").value="";$("draft-preview").replaceChildren();
@@ -662,12 +682,12 @@ $("caller-copy").addEventListener("click",async()=>{
   try{
     const text=RelayCompose.handoff($("launch-project").value,$("launch-request").value,$("launch-extra").value);
     $("caller-copy-preview").hidden=false;$("caller-copy-text").value=text;
-    try{await navigator.clipboard.writeText(text);$("caller-note").textContent="任务已复制。粘贴到当前 Codex 对话中发送；准备好后，回来点“读取安排”。";}
+    try{await navigator.clipboard.writeText(text);$("caller-note").textContent="规划请求已复制。粘贴到当前 Codex 对话中发送；方案就绪后会自动显示，无需刷新。";}
     catch(error){$("caller-copy-text").select();$("caller-note").textContent="请复制下面这段文字，粘贴到当前 Codex 对话中发送。";}
   }catch(error){$("caller-note").textContent=error.message;}
 });
 $("launch-form").addEventListener("submit",async event=>{
-  event.preventDefault();$("launch-start").disabled=true;$("caller-start").disabled=true;
+  event.preventDefault();$("launch-start").disabled=true;
   try{
     const body={project:$("launch-project").value.trim()};
     const extra=$("launch-extra").value.trim();

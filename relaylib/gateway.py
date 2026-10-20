@@ -148,7 +148,7 @@ def upstream_failure(status, body):
 
 class Gateway:
     def __init__(self, endpoint, model, role, limit, phase, ledger, audit_path,
-                 max_body=2_000_000, timeout=60, max_output_tokens=None):
+                 max_body=None, timeout=60, max_output_tokens=None):
         self.endpoint, self.model, self.role = endpoint, model, role
         self.limit, self.phase, self.ledger = limit, phase, ledger
         self.audit_path = Path(audit_path)
@@ -157,9 +157,11 @@ class Gateway:
         self.token = secrets.token_urlsafe(32)
         self.cancel = threading.Event()
         self.failure = None
+        self.failure_context = {}
         self.upstream_status = None
         self.audit_lock = threading.Lock()
         self.connections, self.connection_lock = set(), threading.Lock()
+        self._activity_at, self._activity_lock = time.monotonic(), threading.Lock()
         gateway = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -209,8 +211,12 @@ class Gateway:
                     return self.reply(400, "Compressed/chunked request bodies are unsupported")
                 try:
                     length = int(self.headers.get("Content-Length", "-1"))
-                    if length > gateway.max_body:
+                    if gateway.max_body is not None and length > gateway.max_body:
                         gateway.failure = "input_limit"
+                        gateway.upstream_status = None
+                        gateway.failure_context = {"stage": "本地请求大小检查", "local_status": 413,
+                                                   "body_bytes": length, "limit_bytes": gateway.max_body,
+                                                   "request_forwarded": False}
                         gateway.cancel.set()
                         gateway.audit({"event": "request_denied", "reason": "input_limit",
                                        "body_bytes": length, "limit_bytes": gateway.max_body,
@@ -300,6 +306,7 @@ class Gateway:
                         chunk = response.read1(8192)
                         if not chunk:
                             break
+                        gateway.note_activity()
                         telemetry.feed(chunk)
                         self.wfile.write(chunk)
                         self.wfile.flush()
@@ -325,10 +332,19 @@ class Gateway:
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def audit(self, value):
+        self.note_activity()
         with self.audit_lock:
             with self.audit_path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(value, ensure_ascii=False) + "\n")
                 stream.flush()
+
+    def note_activity(self):
+        with self._activity_lock:
+            self._activity_at = time.monotonic()
+
+    def activity_at(self):
+        with self._activity_lock:
+            return self._activity_at
 
     def __enter__(self):
         self.thread.start()

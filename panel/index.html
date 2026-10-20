@@ -9,9 +9,9 @@
         <div class="launch-row"><label>项目目录<input id="launch-project" required placeholder="实际存在、已提交且干净的 Git 项目根目录"></label><label>协作方式<select id="launch-mode"><option value="caller">当前 Codex 方案 → 执行</option><option value="serial">API 规划模型 → 执行</option><option value="plan">手动导入方案 → 执行</option></select></label></div>
         <p class="hint">此处填写电脑上的项目文件夹完整路径。临时测试目录可能已被清理；项目需有 Git 提交记录。</p>
         <label id="request-label"><span id="request-title">给当前 Codex 的任务指示</span><textarea id="launch-request" rows="3" placeholder="描述要做什么、期望结果和验收要求"></textarea></label>
-        <label id="supplement-label">确认时还想调整什么？（可选）<textarea id="launch-extra" rows="2" placeholder="只填写新增或调整的要求，例如：改成中文回答、只修改指定文件"></textarea><small>执行模型会同时收到原始任务和这段补充；与原方案细节冲突时，以本次补充为准。</small></label>
+        <label id="supplement-label">给执行模型的补充条件（可选）<textarea id="launch-extra" rows="2" placeholder="例如：只修改指定文件、使用中文说明、保留原有功能"></textarea><small>开始任务时直接随方案交给执行模型；与原方案细节冲突时，以本次补充为准。</small></label>
         <label id="plan-label" hidden>已有方案（JSON）<textarea id="launch-plan" rows="5" placeholder='{"goal":"目标","files":[{"path":"app.py","note":"相关事实"}],"steps":["实施步骤"]}'></textarea></label>
-        <section id="caller-draft"><h3>确认从对话带入的任务</h3><p class="hint">在对话里交代任务并调用插件，先显示这次任务，方案准备好后才能开始；准备失败会在这里说明原因。独立创作任务可自动建立工作目录。</p><button id="caller-new" type="button">新任务</button><button id="caller-copy" type="button">复制新任务给当前 Codex</button><button id="caller-start" type="submit" disabled>确认并开始任务</button><button id="draft-refresh" type="button">刷新任务</button><p id="caller-note" class="hint" role="status"></p><label id="caller-copy-preview" hidden>把下面这段文字发到当前 Codex 对话<textarea id="caller-copy-text" rows="5" readonly></textarea></label><div id="draft-preview"></div></section>
+        <section id="caller-draft" aria-labelledby="caller-plan-title"><div class="caller-plan-toolbar"><div><span class="caller-plan-eyebrow">规划端输出</span><h3 id="caller-plan-title">Codex 准备的执行方案</h3></div><button id="caller-new" type="button">新任务</button></div><p class="hint">这里是当前 Codex 写给执行模型的任务安排。请核对目标与步骤，确认后再开始执行。</p><button id="caller-copy" type="button">复制任务给 Codex 规划</button><p id="caller-note" class="hint" role="status"></p><label id="caller-copy-preview" hidden>把下面这段文字发到当前 Codex 对话<textarea id="caller-copy-text" rows="5" readonly></textarea></label><div id="draft-preview"></div></section>
         <div class="launch-row worker-choice"><label>执行模型接口<select id="launch-worker-provider"></select></label><label>执行模型<select id="launch-worker-model"></select></label><button id="worker-refresh" type="button">刷新模型列表</button><button id="worker-apply" type="button">应用选择</button></div>
         <p id="worker-note" class="hint" role="status"></p>
         <fieldset class="delegation-options"><legend>执行时分配子任务</legend>
@@ -35,9 +35,9 @@
       </form>
     </section>
     <section class="shortcut-row" id="shortcut-row" hidden><span>快速打开：</span><code id="shortcut-path" class="path"></code><span class="hint">双击即可启动或复用面板，不经过模型对话，也不会注册开机自启。</span></section>
-    <section class="toolbar"><label for="run">任务记录</label><select id="run"><option>正在读取…</option></select><button id="refresh" type="button">刷新</button><button id="delete-run" type="button" disabled>删除记录</button><button id="undo-delete" type="button" hidden>撤销删除</button><span id="task-state" class="badge">—</span></section>
+    <section class="toolbar"><label for="run">查看记录</label><select id="run"><option>正在读取…</option></select><button id="refresh" type="button">刷新</button><button id="undo-delete" type="button" hidden>撤销删除</button><span id="task-state" class="badge">—</span></section>
     <p id="history-message" class="hint" role="status"></p>
-    <details id="run-manager" class="run-manager"><summary>选择多条任务记录</summary>
+    <details id="run-manager" class="run-manager"><summary>选择并删除任务记录</summary>
       <div class="history-actions"><label><input id="run-select-all" type="checkbox"> 全选可删除的记录</label><span id="run-selected-count" role="status">已选 0 条</span><button id="delete-selected" type="button" disabled>删除所选记录</button></div>
       <p class="hint">运行中的任务不能选择。删除仅从面板列表移除，可撤销本次删除；日志和防重复提交记录仍保留。</p>
       <div id="run-selection-list" class="run-selection-list" aria-label="选择要删除的任务记录"></div>

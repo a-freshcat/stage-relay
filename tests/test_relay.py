@@ -271,6 +271,9 @@ class RelayIntegrationTests(unittest.TestCase):
         self.config["planner"]["timeout_seconds"] = 0.1
         _, state = self.start([{"sleep": 20, "response": plan()}])
         self.assertEqual(state["failure"]["code"], "timeout")
+        self.assertEqual(state["failure"]["timeout_seconds"], 0.1)
+        self.assertGreaterEqual(state["failure"]["idle_seconds"], 0.1)
+        self.assertIn("连续未收到输出或接口数据", state["failure"]["message"])
         self.assertEqual(self.upstream.requests, [])
 
     def test_project_dirty_is_rejected_before_model_work(self):
@@ -453,6 +456,37 @@ class GuardTests(unittest.TestCase):
                                   p / "out", p / "err")
             self.assertEqual(outcome["failure"], "output_limit")
             self.assertLessEqual((p / "out").stat().st_size + (p / "err").stat().st_size, 2000)
+
+    def test_stage_progress_can_outlast_timeout_interval(self):
+        with WorkspaceTemp() as temp:
+            p = Path(temp)
+            script = "import time; [(print('working', flush=True), time.sleep(0.12)) for _ in range(9)]"
+            outcome = run_process([sys.executable, "-u", "-c", script], temp, "", 0.4, 100000,
+                                  p / "out", p / "err", progress_at=lambda: 0.0)
+            self.assertIsNone(outcome["failure"])
+            self.assertGreater(outcome["elapsed_seconds"], 0.4)
+
+    def test_upstream_stream_progress_can_outlast_timeout_interval(self):
+        with WorkspaceTemp() as temp:
+            p = Path(temp)
+            latest = [time.monotonic()]
+            stopped = threading.Event()
+
+            def heartbeat():
+                while not stopped.wait(0.1):
+                    latest[0] = time.monotonic()
+
+            thread = threading.Thread(target=heartbeat, daemon=True)
+            thread.start()
+            try:
+                outcome = run_process([sys.executable, "-c", "import time; time.sleep(1)"],
+                                      temp, "", 0.4, 100000, p / "out", p / "err",
+                                      progress_at=lambda: latest[0])
+            finally:
+                stopped.set()
+                thread.join(timeout=2)
+            self.assertIsNone(outcome["failure"])
+            self.assertGreater(outcome["elapsed_seconds"], 0.4)
 
     def test_timeout_stops_descendant_heartbeat(self):
         with WorkspaceTemp() as temp:

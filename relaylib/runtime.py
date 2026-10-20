@@ -152,8 +152,8 @@ def stop_tree(proc, job=None):
 
 
 def run_process(argv, cwd, stdin_text, timeout, max_bytes, stdout_path, stderr_path,
-                env=None, cancel=None):
-    """Never invoke a shell; drain both streams while enforcing a combined disk cap."""
+                env=None, cancel=None, progress_at=None):
+    """Drain both streams; with progress_at, timeout measures inactivity, not total runtime."""
     flags = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
     start = time.monotonic()
     outputs = ExitStack()
@@ -166,15 +166,18 @@ def run_process(argv, cwd, stdin_text, timeout, max_bytes, stdout_path, stderr_p
     except BaseException:
         outputs.close()
         raise
-    seen, mutex, overflow, io_failed = [0], threading.Lock(), threading.Event(), threading.Event()
+    seen, last_output = [0], [start]
+    mutex, overflow, io_failed = threading.Lock(), threading.Event(), threading.Event()
 
-    def drain(source, target):
+    def drain(source, target, track_progress):
         try:
             read_chunk = getattr(source, "read1", source.read)
             while chunk := read_chunk(4096):
                 with mutex:
                     remaining = max(0, max_bytes - seen[0])
                     seen[0] += len(chunk)
+                    if track_progress:
+                        last_output[0] = time.monotonic()
                     if seen[0] > max_bytes:
                         overflow.set()
                 target.write(chunk[:remaining])
@@ -189,12 +192,12 @@ def run_process(argv, cwd, stdin_text, timeout, max_bytes, stdout_path, stderr_p
         except (BrokenPipeError, OSError):
             pass
 
-    readers = [threading.Thread(target=drain, args=(proc.stdout, stdout_file), daemon=True),
-               threading.Thread(target=drain, args=(proc.stderr, stderr_file), daemon=True)]
+    readers = [threading.Thread(target=drain, args=(proc.stdout, stdout_file, True), daemon=True),
+               threading.Thread(target=drain, args=(proc.stderr, stderr_file, False), daemon=True)]
     for t in readers:
         t.start()
     threading.Thread(target=feed, daemon=True).start()
-    reason = None
+    reason, timeout_wait = None, None
     try:
         while proc.poll() is None:
             if cancel and cancel.is_set():
@@ -203,8 +206,16 @@ def run_process(argv, cwd, stdin_text, timeout, max_bytes, stdout_path, stderr_p
                 reason = "log_io_error"
             elif overflow.is_set():
                 reason = "output_limit"
-            elif time.monotonic() - start > timeout:
-                reason = "timeout"
+            else:
+                now = time.monotonic()
+                if progress_at is None:
+                    last_progress = start
+                else:
+                    with mutex:
+                        last_progress = last_output[0]
+                    last_progress = max(last_progress, progress_at())
+                if now - last_progress > timeout:
+                    reason, timeout_wait = "timeout", round(now - last_progress, 3)
             if reason:
                 stop_tree(proc, job)
                 break
@@ -227,8 +238,12 @@ def run_process(argv, cwd, stdin_text, timeout, max_bytes, stdout_path, stderr_p
         reason = "output_limit"
     if io_failed.is_set():
         reason = "log_io_error"
-    return {"exit_code": proc.returncode, "failure": reason,
-            "elapsed_seconds": round(time.monotonic() - start, 3)}
+    result = {"exit_code": proc.returncode, "failure": reason,
+              "elapsed_seconds": round(time.monotonic() - start, 3)}
+    if reason == "timeout":
+        result.update(timeout_seconds=timeout, idle_seconds=timeout_wait,
+                      timeout_basis="inactivity" if progress_at is not None else "elapsed")
+    return result
 
 
 def git(project, *args):

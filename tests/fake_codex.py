@@ -45,7 +45,11 @@ base_url = config["model_providers.stage_relay.base_url"]
 headers = {"Authorization": "Bearer " + os.environ["STAGE_RELAY_TOKEN"], "Content-Type": "application/json"}
 body = json.dumps({"model": entry.get("request_model", option("-m")), "input": prompt,
                    "fixture_sandbox": option("-s")}).encode()
-for _ in range(entry.get("requests", 1)):
+for name, value in entry.get("write_before_requests", {}).items():
+    (Path(option("-C")) / name).write_text(value, encoding="utf-8")
+for request_index in range(entry.get("requests", 1)):
+    if entry.get("request_input_bytes"):
+        body = json.dumps({"model": option("-m"), "input": "x" * entry["request_input_bytes"][request_index]}).encode()
     request = urllib.request.Request(base_url + "/responses", data=body, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=5) as response:

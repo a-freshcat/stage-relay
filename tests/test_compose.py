@@ -42,3 +42,6 @@ console.log('compose verified');
         self.assertIn('id="launch-extra"', html)
         self.assertIn('给当前 Codex 的任务指示', html)
         self.assertLess(html.index('src="compose.js"'), html.index('src="panel.js"'))
+        self.assertEqual(html.count('type="submit"'), 1)
+        self.assertNotIn('id="draft-refresh"', html)
+        self.assertNotIn('id="caller-start"', html)

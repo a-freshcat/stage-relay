@@ -45,7 +45,7 @@ def serve(store, reader, writer):
                 version = params.get("protocolVersion")
                 result = {"protocolVersion": version if version in PROTOCOLS else PROTOCOLS[0],
                           "capabilities": {"tools": {}}, "serverInfo": {"name": "stage-relay", "version": __version__},
-                          "instructions": "On explicit plugin invocation, call relay_open_panel and display its URL in the client's browser panel. Opening never starts models. Reuse caller plans when delegating work."}
+                          "instructions": "On a task-bearing invocation, call relay_open_panel with the exact request and display its URL first. Continue in the SAME turn: inspect relevant facts read-only and call relay_prepare to save this Codex's plan, then stop for confirmation. No extra user message is required unless they explicitly ask to pause planning. Preparation does not implement deliverables, edit task files, run implementation commands or call relay_submit. Execution requires the user to click Start or separately authorize it. Opening and saving plans make no additional model calls."}
                 initialized = True
             elif method == "ping":
                 result = {}

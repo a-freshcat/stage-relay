@@ -45,14 +45,14 @@ HANDOFF = obj({"goal": string(),
                "constraints": array(string())}, ["goal", "files", "steps"])
 JOB_ID = {"type": "string", "pattern": "[a-f0-9]{24}"}
 TOOLS = [
-    {"name": "relay_open_panel", "description": "Open the GUI. When invoked with a task, pass its exact user_request NOW: it replaces stale tasks immediately, disables Start while planning and returns invocation_id/project for relay_prepare. Omit project for a new standalone artifact to create an isolated committed task workspace; specify project for existing code. No model calls. Prepare the plan before implementing the artifact yourself.",
+    {"name": "relay_open_panel", "description": "Bring the exact user_request into the GUI and open its URL first. In the SAME invocation, continue planning as the current Codex: inspect relevant facts read-only, then call relay_prepare with the returned project/invocation_id. Stop when the saved plan is ready for confirmation; no separate follow-up is required. Preparation must not implement the task, generate deliverables, edit task files, run implementation commands or call relay_submit. Execution requires the user's Start click or separate authorization. Honor an explicit open-only request. Omit project for a new standalone artifact; specify project for existing code. This tool makes no model calls.",
      "inputSchema": obj({"open_browser": {"type": "boolean"}, "user_request": string(100000), "project": string(1000)}, []),
      "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
-    {"name": "relay_prepare", "description": "Save the caller plan, original user_request, instructions and invocation_id returned by task-aware relay_open_panel. Do not implement the deliverable first. For new outputs use an existing README/code file as the facts anchor, and name future output paths in steps. New tasks appear as preparing before this call; failures appear as blocked, never as the old plan. Local only, no model call.",
+    {"name": "relay_prepare", "description": "After opening the task panel, save the current Codex's plan in the SAME invocation; no extra user message is required. Include the original user_request, actual requirements and invocation_id from relay_open_panel. End after the plan is ready for user confirmation. Do not implement deliverables or submit execution. For new outputs use generated README.md as a facts anchor and name future output paths in steps. Local only, no model call.",
      "inputSchema": obj({"project": string(1000), "plan": HANDOFF,
                          "user_request": string(100000), "instructions": array(string()), "invocation_id": JOB_ID}, ["project", "plan"]),
      "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
-    {"name": "relay_submit", "description": "Execute an existing concise plan, preserving user_request. Set review_mode=user_choice to let the user confirm the answer or request original-planner review; auto requests a review after execution. Same project/task_key is idempotent.",
+    {"name": "relay_submit", "description": "Execute an existing concise plan only when the user explicitly authorizes execution; a request to open/refine/prepare the panel is not authorization. Preserve user_request. Set review_mode=user_choice to let the user confirm the answer or request original-planner review; auto requests a review after execution. Same project/task_key is idempotent.",
      "inputSchema": obj({"project": string(1000), "task_key": {"type": "string", "pattern": "[A-Za-z0-9_-]{1,64}"},
                          "plan": HANDOFF, "user_request": string(100000),
                          "review_mode": {"type": "string", "enum": ["user_choice", "auto"]},
@@ -170,7 +170,7 @@ class JobStore:
         result = open_panel(self, open_browser)
         if context:
             result["task"] = context
-            result["next"] = "Call relay_prepare with this project, invocation_id, original user_request and a concise plan. Do not implement the artifact before handoff. Start remains disabled until preparation succeeds."
+            result["next"] = "Open the returned URL first, then continue planning in THIS turn: inspect only the facts needed for planning and call relay_prepare with this project, invocation_id and original user_request. Do not wait for another user message unless they explicitly asked to pause. Finish only after the plan is saved and ready for confirmation. Preparation must not implement the task, generate deliverables, edit task files, run implementation commands or call relay_submit. The user can add optional requirements in the panel and click Start after the plan arrives."
         return result
 
     def submit(self, project, task_key, plan, user_request=None, review_mode=None, subagents=None, draft_id=None):
@@ -197,7 +197,7 @@ class JobStore:
                 fail("draft_stale", "This invocation was replaced by a newer task")
             if request.strip() != current.get("user_request", "").strip() or Path(project).resolve() != Path(current["project"]).resolve():
                 fail("draft_stale", "Task or project changed; start a new task-bearing invocation")
-        elif current.get("status") in ("preparing", "blocked") and current.get("invocation_id"):
+        elif current.get("status") in ("awaiting_refinement", "preparing", "blocked") and current.get("invocation_id"):
             if request.strip() != current.get("user_request", "").strip():
                 fail("draft_stale", "A different task is being prepared")
             invocation_id = current["invocation_id"]

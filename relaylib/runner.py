@@ -68,13 +68,15 @@ def read_config(path):
             if type(item["max_output_tokens"]) is not int:
                 fail("config_error", "Output token limit must be an integer")
     limits = {"max_fix_rounds": 2, "max_replans": 1, "max_log_bytes": 8_000_000,
-              "max_result_bytes": 200_000, "max_request_bytes": 2_000_000,
+              "max_result_bytes": 200_000, "max_request_bytes": None,
               "check_timeout_seconds": 120}
     supplied = config.get("limits", {})
     if not isinstance(supplied, dict) or set(supplied) - set(limits):
         fail("config_error", "Unknown limit")
     limits.update(supplied)
     for name, value in limits.items():
+        if name == "max_request_bytes" and value is None:
+            continue  # No relay-specific input cap unless the operator chooses one.
         if name in ("max_fix_rounds", "max_replans"):
             if type(value) is not int or not 0 <= value <= 20:
                 fail("config_error", f"Invalid {name}")
@@ -345,6 +347,9 @@ class Runner:
                     fail("interrupted", "Stage may have partial edits. Inspect the project, then use --retry-interrupted")
                 if self.state["pending"]["snapshot"]["head"] != project_snapshot(self.project)["head"]:
                     fail("project_changed", "HEAD changed since the interrupted stage")
+                self.state["recovery"] = {"previous_phase": self.state["pending"]["directory"],
+                                          "role": self.state["pending"]["role"],
+                                          "failure_code": (self.state.get("failure") or {}).get("code", "interrupted")}
                 self.state["snapshot"] = project_snapshot(self.project)
                 self.state["pending"] = None
                 self.state["status"] = "ready"
@@ -375,12 +380,32 @@ class Runner:
         base = ("You are one stage of a serial model relay. Return ONLY the requested JSON shape. "
                 "Do not call other models, commit, reset, clean, or change approval/sandbox settings. "
                 "Respect applicable project rules. Never read credentials. "
+                "Check the available browser surfaces before promising visual inspection; tools listed "
+                "in this independent CLI session do not guarantee access to the caller's browser. "
+                "For visual inspection, use an available browser integration. Never launch Edge/Chrome "
+                "from a shell for screenshots or visual checks (including headless mode); do not try "
+                "--single-process or --no-zygote. If no browser integration is available, report that "
+                "visual verification could not be performed and continue with source-based checks only. "
+                "Do not build a replacement renderer or repeatedly generate approximate screenshots "
+                "to compensate for an unavailable browser, unless the user explicitly requested that work. "
+                "Record in residual the actual file, the missing visual check, concrete viewing steps "
+                "and expected behavior, to hand off to the caller for browser verification. "
+                "Complete the requested artifact and available checks; do not repeatedly redesign it "
+                "just to compensate for unavailable visual evidence. Keep diagnostics relevant to the task. "
+                "Never claim visual verification without actually inspecting the rendered result. "
                 "Checks are preconfigured by the user; acceptance contains their IDs, never new commands.\n"
                 "Write all human-readable JSON string values and user-facing messages in the same language "
                 "as USER REQUEST unless the user explicitly requests another language. Preserve schema keys, "
                 "enum values, IDs, file paths and code identifiers.\n"
                 f"USER REQUEST:\n{request}\nCONFIGURED CHECKS (ID -> argv):\n{checks}\n")
         base += subagents.instructions(self.config.get("subagents") if role == "worker" else None)
+        recovery = self.state.get("recovery")
+        if recovery and recovery.get("role") == role:
+            base += ("RECOVERY FROM PARTIAL WORK: Files from the interrupted stage were preserved. "
+                     "Inspect the existing artifact and current diff first; continue only remaining work, "
+                     "do not start over or regenerate accepted content. The previous phase's records are "
+                     "available on demand; do not load its entire history or images unnecessarily.\n"
+                     + json.dumps(recovery, ensure_ascii=False, separators=(",", ":")) + "\n")
         if role == "reviewer":
             base += (("You are the user's selected reviewer auditing another model's execution. "
                       if self.review_target().get("selection") else
@@ -506,12 +531,22 @@ class Runner:
             self.context.update(stage="运行模型进程", executable=argv[0])
             result = run_process(argv, self.project, prompt, spec["timeout_seconds"],
                                  self.config["limits"]["max_log_bytes"], directory / "events.jsonl",
-                                 directory / "stderr.log", env=env, cancel=gate.cancel)
+                                 directory / "stderr.log", env=env, cancel=gate.cancel,
+                                 progress_at=gate.activity_at)
             if gate.failure:
                 result["failure"] = gate.failure
-                self.context["upstream_status"] = gate.upstream_status
-                if gate.upstream_status:
+                if gate.failure_context:
+                    self.context.pop("upstream_status", None)
+                    self.context.update(gate.failure_context)
+                else:
+                    self.context["upstream_status"] = gate.upstream_status
+                if gate.upstream_status and not gate.failure_context:
                     self.context["stage"] = "上游模型请求"
+        if result["failure"] == "timeout":
+            self.context.update(timeout_basis=result["timeout_basis"],
+                                timeout_seconds=result["timeout_seconds"],
+                                idle_seconds=result["idle_seconds"],
+                                elapsed_seconds=result["elapsed_seconds"])
         result["usage"] = parse_events(directory / "events.jsonl")
         result["model"] = spec["model"]
         result["subagents"] = subagents.lifecycle(directory / "events.jsonl", spec["model"])
@@ -592,6 +627,7 @@ class Runner:
         self.state["pending"] = None
         self.state["status"] = "ready"
         self.state["failure"] = None
+        self.state.pop("recovery", None)
         self.save()
 
     def _checks(self):
