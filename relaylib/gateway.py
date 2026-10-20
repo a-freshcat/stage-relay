@@ -247,7 +247,12 @@ class Gateway:
                         gateway.failure = "request_limit"
                         gateway.cancel.set()
                         return self.reply(429, "Stage role request limit reached")
+                    request_id = secrets.token_hex(12)
+                    # Only a UUID-like identifier is public. Never log arbitrary routing headers.
+                    from .subagents import public_agent_id
+                    agent_id = public_agent_id(self.headers)
                     gateway.audit({"event": "request_forwarded", "role": gateway.role,
+                                   "request_id": request_id, "agent_id": agent_id,
                                    "phase": gateway.phase, "model": gateway.model,
                                    "body_bytes": length, "time": time.time()})
                 except OSError:
@@ -289,12 +294,18 @@ class Gateway:
                     self.send_header("Connection", "close")
                     self.end_headers()
                     started = True
+                    from .subagents import UsageCollector
+                    telemetry = UsageCollector(response.getheader("Content-Type", "application/json"))
                     while not gateway.cancel.is_set():
                         chunk = response.read1(8192)
                         if not chunk:
                             break
+                        telemetry.feed(chunk)
                         self.wfile.write(chunk)
                         self.wfile.flush()
+                    gateway.audit({"event": "response_usage", "role": gateway.role, "phase": gateway.phase,
+                                   "request_id": request_id, "agent_id": agent_id,
+                                   "usage": telemetry.finish() if not gateway.cancel.is_set() else None})
                     self.close_connection = True
                 except (OSError, http.client.HTTPException):
                     gateway.failure = "transport_error"

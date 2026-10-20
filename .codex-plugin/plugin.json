@@ -1,6 +1,6 @@
 {
   "name": "stage-relay",
-  "version": "1.0.0",
+  "version": "1.2.1",
   "description": "Open a local collaboration GUI, run planner-to-worker tasks, or reuse caller plans with visible handoffs.",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
@@ -12,7 +12,7 @@
     "longDescription": "在本地面板确认任务、查看执行回答、选择已有模型或当前 Codex 审核，并管理任务记录。接口和密钥由用户自行配置。",
     "developerName": "a-freshcat",
     "category": "Productivity",
-    "capabilities": ["Plan handoff", "Model execution", "Result review"],
+    "capabilities": ["Plan handoff", "Model execution", "Subagent execution", "Result review", "Review corrections"],
     "brandColor": "#267D63",
     "composerIcon": "./assets/icon.svg",
     "logo": "./assets/icon.svg"

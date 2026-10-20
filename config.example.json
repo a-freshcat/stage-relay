@@ -1,6 +1,8 @@
 {
   "version": 1,
   "review": true,
+  "review_corrections": true,
+  "subagents": {"mode": "off"},
   "codex_command": ["codex"],
   "planner": {
     "model": "gpt-6.1-sol",

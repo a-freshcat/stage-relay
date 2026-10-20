@@ -45,6 +45,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(len(self.f.upstream.requests), 3)
 
     def test_review_failure_does_not_erase_worker_answer_or_repeat_execution(self):
+        self.f.config["review_corrections"] = False  # Explicit review-only behavior remains available.
         output = fixtures.result()
         output["answer"] = "已完成，等待审核。"
         runner, state = self.f.start([{"response": fixtures.plan()},

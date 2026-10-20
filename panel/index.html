@@ -11,9 +11,14 @@
         <label id="request-label"><span id="request-title">给当前 Codex 的任务指示</span><textarea id="launch-request" rows="3" placeholder="描述要做什么、期望结果和验收要求"></textarea></label>
         <label id="supplement-label">确认时还想调整什么？（可选）<textarea id="launch-extra" rows="2" placeholder="只填写新增或调整的要求，例如：改成中文回答、只修改指定文件"></textarea><small>执行模型会同时收到原始任务和这段补充；与原方案细节冲突时，以本次补充为准。</small></label>
         <label id="plan-label" hidden>已有方案（JSON）<textarea id="launch-plan" rows="5" placeholder='{"goal":"目标","files":[{"path":"app.py","note":"相关事实"}],"steps":["实施步骤"]}'></textarea></label>
-        <section id="caller-draft"><h3>确认从对话带入的任务</h3><p class="hint">在对话里交代任务并调用插件，任务和方案会自动显示在这里。核对后即可开始；有调整时填写补充要求。</p><button id="caller-copy" type="button">复制新任务给当前 Codex</button><button id="caller-start" type="submit" disabled>确认并开始任务</button><button id="draft-refresh" type="button">刷新任务</button><p id="caller-note" class="hint" role="status"></p><label id="caller-copy-preview" hidden>把下面这段文字发到当前 Codex 对话<textarea id="caller-copy-text" rows="5" readonly></textarea></label><div id="draft-preview"></div></section>
+        <section id="caller-draft"><h3>确认从对话带入的任务</h3><p class="hint">在对话里交代任务并调用插件，先显示这次任务，方案准备好后才能开始；准备失败会在这里说明原因。独立创作任务可自动建立工作目录。</p><button id="caller-new" type="button">新任务</button><button id="caller-copy" type="button">复制新任务给当前 Codex</button><button id="caller-start" type="submit" disabled>确认并开始任务</button><button id="draft-refresh" type="button">刷新任务</button><p id="caller-note" class="hint" role="status"></p><label id="caller-copy-preview" hidden>把下面这段文字发到当前 Codex 对话<textarea id="caller-copy-text" rows="5" readonly></textarea></label><div id="draft-preview"></div></section>
         <div class="launch-row worker-choice"><label>执行模型接口<select id="launch-worker-provider"></select></label><label>执行模型<select id="launch-worker-model"></select></label><button id="worker-refresh" type="button">刷新模型列表</button><button id="worker-apply" type="button">应用选择</button></div>
         <p id="worker-note" class="hint" role="status"></p>
+        <fieldset class="delegation-options"><legend>执行时分配子任务</legend>
+          <div class="launch-row"><label>子 agent<select id="subagents-mode"><option value="off">关闭 · 由执行模型独立完成</option><option value="auto">自动 · 由执行模型判断是否分工</option><option value="manual">指定分工 · 按下面的任务安排</option></select></label><label>同时运行数量（可选）<input id="subagents-concurrency" type="number" min="1" max="100" placeholder="沿用 Codex 设置"></label></div>
+          <p class="hint">子 agent 沿用执行模型、接口与密钥，不额外调用规划模型。适合互不依赖的大任务；可能减少等待，也可能增加 token 和费用。不会压缩正常输出。原任务和确认时的补充要求仍然有效。</p>
+          <div id="subagents-manual" hidden><p class="hint">各写入范围不能重叠；只读是任务要求，子 agent 仍继承执行端的权限。</p><div id="subagents-tasks"></div><button id="subagents-add" type="button">添加一项分工</button></div>
+        </fieldset>
         <section class="model-check" aria-label="模型检查">
           <div class="model-check-head"><strong>检查所选模型</strong><span class="hint">只有点击下面按钮才可能发送模型请求；打开页面、刷新目录和开始任务都不会自动运行。</span></div>
           <div class="model-check-actions check-options">
@@ -44,6 +49,8 @@
       <article class="summary-card issues-card"><h2>问题 <span id="issue-count" class="badge">0</span></h2><div id="issues"></div><section id="failure" class="failure-card" role="alert" hidden></section></article>
     </section>
     <section id="progress" class="progress-card" aria-label="运行进度" hidden><div class="progress-head"><h2>运行进度</h2><span id="progress-stage" class="badge active"></span></div><div id="progress-event"></div></section>
+    <section id="subagents-results" class="subagents-results" aria-label="执行子任务" hidden><h2>执行子任务 <span class="card-hint">目标、回答与问题</span></h2><p id="subagents-usage" class="hint"></p><div id="subagents-cards"></div></section>
+    <section id="corrections" class="correction-panel" aria-label="审核返修" hidden><h2>审核返修</h2><p id="correction-status" role="status"></p><div id="correction-actions"></div><div id="correction-rounds"></div></section>
     <details id="history" class="history" data-key="history"><summary>历史过程：两栏输出、交接记录、独立检查与代码差异</summary>
       <section class="agents" aria-label="两个 agent 的工作输出"><article class="agent" id="planner"></article><article class="agent" id="worker"></article></section>
       <section class="handoff-section"><h2>交接记录 <span class="card-hint">默认折叠：谁交给谁、当前状态、交接目的</span></h2><div id="handoffs"></div></section>
@@ -59,6 +66,7 @@
   <dialog id="review-choice-dialog" aria-labelledby="review-choice-title">
     <div class="dialog-head"><h2 id="review-choice-title">选择审核方式</h2><button id="review-choice-close" type="button" aria-label="关闭审核选择">×</button></div>
     <p id="review-choice-task" class="hint"></p>
+    <label class="check-label"><input id="review-auto-correct" type="checkbox" checked>审核不通过时，自动交回原执行模型修改并复审</label><p class="hint">可能产生多轮模型费用，沿用现有请求额度。可在返修区申请暂停，当前阶段完成后生效；证据不足或重复无进展时会暂停。当前 Codex 需在对话中继续复审。</p>
     <section class="review-option codex-review"><h3>交给当前 Codex 对话</h3><p>复制审核请求发到当前对话，由 Codex 读取保存的执行结果和证据，写回结论。网页不能自动唤醒对话。</p><button id="review-use-codex" type="button">复制给 Codex 的审核请求</button></section>
     <section class="review-option saved-review"><h3>选择已保存的模型</h3><label for="review-saved-model">审核模型（接口与密钥沿用已有配置）</label><select id="review-saved-model"></select><p>点击后才调用所选模型，可能产生费用。只审核已保存的结果，不重新执行任务，也不重跑测试。</p><button id="review-use-model" type="button" class="primary" disabled>用所选模型审核</button></section>
     <p id="review-choice-note" class="hint" role="status"></p>

@@ -196,3 +196,19 @@ summary{font-weight:600;color:#365575;font-size:12px}
 .review-option.saved-review{border-color:#c4b5dd;border-left-color:#7f57ab;background:#faf6ff}
 .saved-review h3{color:#65418b}
 .top>strong{display:inline-flex;align-items:center;gap:10px}.top>strong img{display:block;border-radius:8px}
+/* Delegation stays distinct from the final answer and review. */
+.delegation-options{margin:18px 0;border:1px solid #8173ba;border-left:4px solid #7460ad;border-radius:8px;padding:14px;background:#f8f6ff}
+.delegation-options legend{font-weight:700;color:#473777}
+.delegation-task{margin:12px 0;padding:12px;border:1px solid #c9c0e5;border-radius:6px}
+.delegation-task label{display:block;margin-bottom:8px}
+.subagents-results{margin:20px 0;padding:18px;border:1px solid #b9abda;border-top:4px solid #7460ad;border-radius:8px;background:#fcfaff}
+#subagents-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px}
+.subagent-card{padding:14px;border:1px solid #cec4e6;border-radius:8px;background:#fff;min-width:0}
+.subagent-card pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}
+.subagent-card.has-problem{border-left:4px solid #be3333;background:#fff7f7}
+.correction-panel{margin:20px 0;padding:18px;border:1px solid #c59e62;border-top:4px solid #ab6a17;border-radius:8px;background:#fffaf0}
+.correction-round{margin:10px 0;border:1px solid #ddc8a7;border-radius:6px;background:#fff}
+.correction-round summary{font-weight:700;color:#704814}
+.review-change{margin:10px 0;padding:10px 12px;border-left:4px solid #bd4141;background:#fff5f4;overflow-wrap:anywhere}
+.review-change p{margin:6px 0}
+#correction-actions{display:flex;flex-wrap:wrap;gap:10px}

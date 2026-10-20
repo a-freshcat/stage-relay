@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from pathlib import Path
 
 
@@ -20,7 +21,15 @@ def load_json(path, limit=1_000_000):
     if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
         fail("protocol_error", f"Missing, linked, or oversized JSON file: {path.name}")
     try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
+        # Windows may briefly deny a read while another process replaces a
+        # checkpoint. Retry only the local read; never repeat model execution.
+        for attempt in range(8):
+            try:
+                return json.loads(path.read_text(encoding="utf-8-sig"))
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
     except (ValueError, UnicodeError):
         fail("protocol_error", f"Invalid UTF-8 JSON: {path.name}")
 
@@ -122,4 +131,7 @@ def schemas():
     review = obj({"status": {"type": "string", "enum": ["approved", "changes_requested", "unable_to_verify"]},
                   "summary": text(1, 100000), "evidence": array(text()), "issues": array(text())})
     review["properties"]["resolved_residual"] = array({"type": "integer"})
+    review["properties"]["change_requests"] = array(obj({
+        "path": text(0, 500), "location": text(0, 500), "problem": text(),
+        "requested_change": text(), "verification": text()}))
     return {"plan": plan, "result": result, "review": review}

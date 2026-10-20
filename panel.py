@@ -21,6 +21,8 @@ from relaylib.plugin import JobStore, HANDOFF
 from relaylib.runtime import atomic_json, FileLock
 from relaylib.diagnostics import describe_failure
 from relaylib import checks
+from relaylib import subagents
+from relaylib import corrections
 
 ROOT = Path(__file__).resolve().parent
 PHASE = re.compile(r"\d{3,6}-(planner|worker|reviewer)")
@@ -285,6 +287,8 @@ class Store:
             # state=running can survive a crash; this is checkpoint state, not
             # a claim that a process or an API request is currently alive.
             phases.append({"id": path.name, "role": role, "status": status, "model": finish.get("model"),
+                           "subagents": finish.get("subagents") or subagents.lifecycle(path / "events.jsonl", config.get("worker", {}).get("model")),
+                           "routed_usage": finish.get("routed_usage") or subagents.routed_usage(directory / "requests.jsonl", path.name),
                            "events": events, "usage": usage, "input": prompt,
                            "response": json_file(path, "response.json"),
                            "stderr": text_file(path, "stderr.log", limit=8_000, tail=True),
@@ -331,7 +335,7 @@ class Store:
         active = self.active(directory)
         confirmed = confirmation and not confirmation["stale"] and not active
         can_confirm = bool(job and not active and not failure and not state.get("pending") and
-                           state.get("status") in ("completed", "needs_manual_verification", "exhausted") and
+                           state.get("status") in ("completed", "needs_manual_verification", "exhausted", "review_paused") and
                            (state.get("last_result") or {}).get("status") == "completed")
         return {"id": identity, "job_id": directory.parent.name if job else None,
                 "confirmation": confirmation, "can_confirm": can_confirm,
@@ -343,6 +347,11 @@ class Store:
                 "can_delete": not self.active(directory),
                 "project": state.get("project", job.get("project")), "updated_at": state.get("updated_at", service.get("time")),
                 "request": request, "roles": roles, "phases": phases,
+                "review_state": state.get("review_state"), "review_cycle": corrections.public_cycle(state),
+                "review_record_wiring": str(ROOT / ".mcp.json"),
+                "correction_history": corrections.history(directory),
+                "pause_requested": (directory / "correction-pause.json").is_file(),
+                "subagents_policy": config.get("subagents", {"mode": "off"}),
                 "handoffs": handoffs, "checks": state.get("validation"), "configured_checks": list(config.get("checks", {})),
                 "patch": text_file(directory, "changes.patch", limit=60_000),
                 "observed_at": time.time(), "observer_model_calls": 0,
@@ -459,7 +468,7 @@ def make_server(store, port=0, settings=None, jobs=None):
                 return
             route = urlsplit(self.path).path
             if route not in tuple(prefix + name for name in ("/api/settings", "/api/jobs", "/api/models", "/api/history",
-                                                             "/api/worker-models", "/api/worker", "/api/check", "/api/confirm", "/api/review")):
+                                                             "/api/worker-models", "/api/worker", "/api/check", "/api/confirm", "/api/review", "/api/correct", "/api/pause-corrections")):
                 reject(404, "Not found")
                 return
             raw_length = self.headers.get("Content-Length", "")
@@ -472,7 +481,12 @@ def make_server(store, port=0, settings=None, jobs=None):
             self.connection.settimeout(5)
             try:
                 value = json.loads(self.rfile.read(int(raw_length)))
-                if route.endswith(("/confirm", "/review")):
+                if route.endswith("/pause-corrections"):
+                    if jobs is None:
+                        raise SettingsError("当前入口仅供查看。", 403)
+                    validate(value, {"type": "object", "properties": {"job_id": {"type": "string", "pattern": "[a-f0-9]{24}"}}, "required": ["job_id"], "additionalProperties": False})
+                    result = jobs.pause_corrections(value["job_id"])
+                elif route.endswith(("/confirm", "/review", "/correct")):
                     if jobs is None:
                         raise SettingsError("当前入口仅供查看。", 403)
                     properties = {
@@ -480,16 +494,19 @@ def make_server(store, port=0, settings=None, jobs=None):
                         "result_revision": {"type": "string", "pattern": "[a-f0-9]{64}"}}
                     if route.endswith("/review"):
                         properties.update(provider_id={"type": "string", "minLength": 1, "maxLength": 80},
-                                          model={"type": "string", "minLength": 1, "maxLength": 200})
+                                          model={"type": "string", "minLength": 1, "maxLength": 200},
+                                          auto_correct={"type": "boolean"})
                     validate(value, {"type": "object", "properties": properties,
                                     "required": ["job_id", "result_revision"], "additionalProperties": False})
                     if ("provider_id" in value) != ("model" in value):
                         raise SettingsError("请选择完整的已有审核模型。")
                     if route.endswith("/confirm"):
                         result = jobs.confirm_result(**value)
+                    elif route.endswith("/correct"):
+                        result = jobs.correct_result(**value)
                     else:
                         reviewer = settings.reviewer(value["provider_id"], value["model"]) if "provider_id" in value else None
-                        result = jobs.request_review(value["job_id"], value["result_revision"], reviewer=reviewer)
+                        result = jobs.request_review(value["job_id"], value["result_revision"], reviewer=reviewer, auto_correct=value.get("auto_correct", True))
                 elif route.endswith("/worker-models"):
                     if not isinstance(value, dict) or set(value) - {"provider_id", "refresh"}:
                         raise SettingsError("接口选择格式不正确。")
@@ -533,14 +550,18 @@ def make_server(store, port=0, settings=None, jobs=None):
                         "project": {"type": "string", "minLength": 1},
                         "task_key": {"type": "string", "pattern": "[A-Za-z0-9_-]{1,64}"},
                         "request": {"type": "string", "minLength": 1}, "plan": HANDOFF,
+                        "draft_id": {"type": "string", "pattern": "[a-f0-9]{24}"},
                         "user_request": {"type": "string", "minLength": 1, "maxLength": 100000},
-                        "review_mode": {"type": "string", "enum": ["user_choice", "auto"]}},
+                        "review_mode": {"type": "string", "enum": ["user_choice", "auto"]},
+                        "subagents": subagents.SCHEMA},
                         "required": ["project", "task_key"], "additionalProperties": False})
                     if ("plan" in value) == ("request" in value):
                         self.reply(400, {"error": "请选择完整接力或已有方案执行"})
                         return
                     if "user_request" in value and "plan" not in value:
                         raise SettingsError("原始任务指示仅用于已有方案执行。")
+                    if "user_request" in value and "draft_id" not in value and (jobs.draft() or {}).get("invocation_id"):
+                        fail("draft_stale", "This old panel did not identify the current invocation; refresh before starting")
                     result = jobs.submit(**value) if "plan" in value else jobs.submit_task(**value)
                     result["run_id"] = Store.identity(jobs.directory(result["job_id"]) / "relay")
                 self.reply(200, result)

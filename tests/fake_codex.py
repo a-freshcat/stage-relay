@@ -65,6 +65,8 @@ else:
     print("WARNING: fixture warning on stdout")
     print(json.dumps({"type": "thread.started", "thread_id": "mock-thread"}))
     print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 10}}))
+    for event in entry.get("events", []):
+        print(json.dumps(event))
 for name, value in entry.get("write", {}).items():
     (Path(option("-C")) / name).write_text(value, encoding="utf-8")
 output = Path(option("-o"))

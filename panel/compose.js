@@ -10,14 +10,15 @@
   }
   function callerPlan(draft, project, request, supplement) {
     if (!draft) throw new Error("请先将任务交给当前 Codex 准备方案，再点击读取当前对话方案。");
+    if (!draft.plan || (draft.status && draft.status !== "ready")) throw new Error(draft.error?.message || "当前任务方案正在准备，尚不能开始执行。");
     if (projectKey(project) !== projectKey(draft.project)) throw new Error("项目已更改，请交给当前 Codex 为这个项目重新准备方案。");
     if (clean(request) !== clean(draft.user_request || draft.plan.goal)) throw new Error("任务指示已更改，请复制给当前 Codex 重新准备方案；不会使用旧方案执行新任务。");
     return withSupplement(draft.plan, supplement);
   }
   function syncDraft(previous, draft, supplement) {
-    const request = draft.user_request || draft.plan.goal;
+    const request = draft.user_request || draft.plan?.goal || "";
     const sameTask = previous && projectKey(previous.project) === projectKey(draft.project)
-      && clean(previous.user_request || previous.plan.goal) === clean(request);
+      && clean(previous.user_request || previous.plan?.goal) === clean(request);
     return {project: draft.project, request, supplement: sameTask ? String(supplement || "") : ""};
   }
   function executionRequest(request, supplement) {

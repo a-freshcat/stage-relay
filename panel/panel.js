@@ -5,6 +5,7 @@ const labels = {completed:"独立检查通过",running:"检查点：运行中",r
 labels.awaiting_plan="等待调用方调整方案";
 Object.assign(labels,{stopped:"任务已停止",queued:"已排队",needs_replan:"需要调整方案"});
 labels.user_confirmed="你已确认 · 流程已结束";
+labels.review_paused="审核返修已暂停";
 const phaseChoice = {}, outputScroll = {};
 let current = "", snapshotKey = "", runsKey = "", busy = false, listTick = 0;
 let pendingJob = "", launchSignature = "", launchKey = "";
@@ -15,7 +16,7 @@ let callerDraft = null, launchEnabled = false;
 let launchProfiles=[],launchRevision="",workerEpoch=0,repeatReady=false;
 let currentActive=false,lastAutomaticRefresh=0;
 let loadedDraftGoal="";
-let loadedDraftId="",draftLoading=false,lastDraftCheck=0;
+let loadedDraftId="",dismissedDraftId="",draftLoading=false,lastDraftCheck=0;
 function node(tag, text, cls) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; }
 function pretty(value) { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
 function badge(status) { return node("span", labels[status] || status || "—", "badge " + (["completed","accepted","user_confirmed"].includes(status)?"good":["running","ready"].includes(status)?"active":["failed","blocked","exhausted","awaiting_recovery"].includes(status)?"bad":"")); }
@@ -80,7 +81,8 @@ const HELP={
   review:{title:"谁来审核执行结果？",lines:[
     "审核会核对用户目标、原方案、执行回答和已有测试证据。你可以交给当前 Codex 对话，或选择已保存的模型，不需要再配置接口与密钥。",
     "执行结束后，先看执行模型的回答。你可以点“我已确认，结束任务”自行确认；这会保存你的确认，不会启动模型，也不会把未运行的项目测试改成通过。",
-    "点击“选择审核方式”，可从已有模型中选择。只有点击“用所选模型审核”才会发送审核请求，可能产生额外模型费用；不会重做执行任务或重跑测试。",
+    "选择审核方时，默认允许不通过后自动返修：审核列出问题，原执行模型修改、运行已有项目测试，再交回同一审核方复审，可能产生多轮费用。取消勾选则只保存审核结论。",
+    "返修区可以申请完成当前阶段后暂停。证据不足不会自动猜测修改；相同问题且没有进展会暂停。可查看每轮问题、修改回答和复审结论，再决定继续。",
     "选择当前 Codex 时，把复制的内容发到当前对话。网页不能自行唤醒对话；保存审核后面板会更新。旧任务不会自动补发付费审核请求。"
   ]},
   residual:{title:"模型提醒怎么处理？",lines:[
@@ -102,11 +104,15 @@ $("help-worker").addEventListener("click",()=>jumpTo("worker"));
 $("help-checks").addEventListener("click",()=>jumpTo("checks"));
 $("review-copy-close").addEventListener("click",()=>$("review-copy-dialog").close());
 async function copyReview(data){
-  const request="请作为这个任务的"+(data.plan_source==="caller"?"原规划端":"审核端")+"审核执行结果，并将审核结论写回 Stage Relay 面板。不要重新启动执行任务或调用其他模型。\n"+
+  const auto=data.auto_correct!==false;
+  const request="请作为这个任务的"+(data.plan_source==="caller"?"原规划端":"审核端")+"审核执行结果，并将审核结论写回 Stage Relay 面板。由你审核，不再调用其他审核模型，也不要重复提交整个任务。\n"+
     "任务："+data.request+"\njob_id："+data.job_id+"\n结果版本："+data.review_revision+"\n记录目录："+data.path+"\n"+
     "读取该目录 plan.json、result.json、state.json 中的 validation 和 changes.patch，必要时核对项目文件。区分接力连通、实际任务目标与未运行的测试，不将执行端自报等同测试通过。\n"+
     "逐条核对 residual 提醒：说明具体检查对象、验证方法、预期结果；已解决或与本次范围无关的条目，在 evidence 写出依据，并将其从 0 开始的索引加入 resolved_residual，未解决的不加入。\n"+
-    "调用 relay_record_review，传入 job_id、result_revision（上述结果版本）与 review：status 为 approved / changes_requested / unable_to_verify；summary 为给用户的结论，evidence 为依据数组，issues 为可操作的问题数组，resolved_residual 为已核对关闭的提醒索引数组。若工具未加载，使用安装版 mcp_server.py 的 --record-review 参数读取同样的 JSON 文件写回，无需重跑模型。";
+    "不通过时在 change_requests 逐项填写 path、location、problem、requested_change、verification（含预期结果）；回复类任务的 path/location 可留空，不编造行号或命令。\n"+
+    "调用 relay_record_review，传入 job_id、result_revision（上述结果版本）、auto_correct:"+auto+" 与 review：status 为 approved / changes_requested / unable_to_verify；summary 为给用户的结论，evidence 为依据数组，issues 为可操作的问题数组，resolved_residual 为已核对关闭的提醒索引数组。\n"+
+    (auto?"我允许审核不通过后让原执行模型按意见返修（可能产生模型费用）。工具返回 queued 后使用 relay_wait 等待，读取新的结果版本、回答、测试与差异，并继续由你复审，直到通过、受阻、证据不足或暂停；不能复用旧结果版本，也不能替执行模型声称测试通过。网页无法在对话结束后自行唤醒你。\n":"本次只审核，不启动返修。\n")+
+    "若工具未加载或不支持 change_requests/auto_correct，读取当前安装版接入配置 "+(data.review_record_wiring||"插件目录中的 .mcp.json")+"，使用其中 command 和 args 加 --record-review <保存上述参数的JSON文件> 写回。后续等待也沿用同一 command/args 加 --wait-job <job_id> --seconds 50 --full-result，取得新版结果与版本号；不要采用旧工具计算的结果版本。";
   $("review-copy-text").value=request;$("review-copy-dialog").showModal();
   try{await navigator.clipboard.writeText(request);$("review-copy-note").textContent="已复制，请粘贴回原 Codex 对话并发送。";}
   catch{$("review-copy-text").select();$("review-copy-note").textContent="请选中上方文字复制，发回原 Codex 对话。";}
@@ -209,6 +215,7 @@ function renderResult(data){
   if(review&&!review.stale){
     reviewBox.append(node("span",reviewLabel(review.status),"badge "+(review.status==="approved"?"good":review.status==="changes_requested"?"bad":"warn")),node("p",review.summary,"answer-text"),node("small","审核方："+(review.reviewer_selection?.provider_name?review.reviewer_selection.provider_name+" · ":"")+review.reviewer,"hint"));
     if(review.evidence?.length)reviewBox.append(detail("审核依据",review.evidence,"review-evidence"));
+    for(const item of review.change_requests||[])reviewBox.append(changeRequestCard(item));
   }else{
     const reviewing=data.phases.some(p=>p.role==="reviewer"&&p.status==="running");
     reviewBox.append(node("p",confirmed?"本次由你自行确认结束。":review?.stale?"执行结果已变化，原审核不再适用。":reviewing?"所选审核模型正在核对执行结果…":"你可以自行确认，或选择当前 Codex / 已保存的模型审核。","hint"));
@@ -254,11 +261,11 @@ async function openReviewChoice(data){
 }
 $("review-choice-close").addEventListener("click",()=>{reviewChoice=null;$("review-choice-dialog").close();});
 $("review-saved-model").addEventListener("change",()=>{$("review-use-model").disabled=reviewBusy||$("review-saved-model").value==="";});
-$("review-use-codex").addEventListener("click",()=>{const data=reviewChoice;if(!data||reviewBusy)return;reviewChoice=null;$("review-choice-dialog").close();copyReview(data);});
+$("review-use-codex").addEventListener("click",()=>{const data=reviewChoice;if(!data||reviewBusy)return;reviewChoice=null;$("review-choice-dialog").close();copyReview({...data,auto_correct:$("review-auto-correct").checked});});
 $("review-use-model").addEventListener("click",async()=>{
   const data=reviewChoice,choice=reviewChoices[$("review-saved-model").value];if(!data||!choice||reviewBusy)return;
   reviewBusy=true;$("review-use-model").disabled=true;$("review-use-codex").disabled=true;
-  try{const value=await localPost("api/review",{job_id:data.job_id,result_revision:data.review_revision,...choice});if(value.status==="queued")pendingJob=data.job_id;snapshotKey="";$("history-message").textContent=value.reused?"已读取所选模型对这份结果的已有审核。":"已交给 "+choice.model+" 审核，不重新执行任务。";reviewChoice=null;$("review-choice-dialog").close();await refresh(true);}
+  try{const value=await localPost("api/review",{job_id:data.job_id,result_revision:data.review_revision,...choice,auto_correct:$("review-auto-correct").checked});if(value.status==="queued")pendingJob=data.job_id;snapshotKey="";$("history-message").textContent=value.reused?"已读取所选模型对这份结果的已有审核。":"已交给 "+choice.model+" 审核；是否自动返修按本次选择执行。";reviewChoice=null;$("review-choice-dialog").close();await refresh(true);}
   catch(error){$("review-choice-note").textContent="未能发起审核："+error.message;}
   finally{reviewBusy=false;$("review-use-codex").disabled=false;$("review-use-model").disabled=$("review-saved-model").value==="";}
 });
@@ -419,6 +426,77 @@ function renderHandoffs(data){
   }
   if(!data.handoffs.length)$("handoffs").append(node("p","接收阶段开始后，这里会显示实际交接输入。","empty"));
 }
+function changeRequestCard(item){
+  const box=node("div",undefined,"review-change");
+  box.append(node("strong",(item.path||"回答 / 任务结果")+(item.location?" · "+item.location:"")));
+  for(const [label,key] of [["问题","problem"],["修改要求","requested_change"],["如何验证","verification"]])if(item[key])box.append(node("p",label+"："+item[key]));
+  return box;
+}
+function renderCorrections(data){
+  const rounds=data.correction_history||[],cycle=data.review_cycle||{};
+  const rejected=data.review&&!data.review.stale&&data.review.status==="changes_requested";
+  $("corrections").hidden=!rounds.length&&!cycle.active&&!rejected;
+  $("correction-actions").replaceChildren();$("correction-rounds").replaceChildren();
+  const states={correcting:"原执行模型正在按审核意见修改",awaiting_caller:"返修已完成，等待当前 Codex 复审",reviewing:"等待同一审核方复审",paused_no_progress:"相同问题再次出现，结果未见变化，已暂停返修",paused_by_user:"已按你的要求暂停",approved:"审核通过，返修结束",unable_to_verify:"证据不足，已停止自动返修",changes_requested:"审核要求修改",user_confirmed:"你已自行确认，返修流程结束"};
+  $("correction-status").textContent=(states[data.review_state]||"按审核意见继续处理")+(data.pause_requested&&cycle.active?" · 已申请在当前阶段后暂停":"");
+  function action(text,route,payload){const button=node("button",text);button.type="button";button.addEventListener("click",async()=>{button.disabled=true;try{const result=await localPost(route,payload);if(result.status==="queued")pendingJob=data.job_id;snapshotKey="";await refresh(true);}catch(error){$("history-message").textContent=error.message;button.disabled=false;}});$("correction-actions").append(button);return button;}
+  if(cycle.active&&data.review_state!=="awaiting_caller"&&data.job_id)action("完成当前阶段后暂停返修","api/pause-corrections",{job_id:data.job_id}).disabled=!!data.pause_requested;
+  if(data.review_state==="awaiting_caller"&&data.can_confirm){const button=node("button","把新结果交回当前 Codex 复审");button.type="button";button.addEventListener("click",()=>copyReview({...data,auto_correct:cycle.auto_correct!==false}));$("correction-actions").append(button);}
+  if((data.state==="review_paused"||rejected&&!cycle.active)&&data.can_confirm&&!(data.confirmation&&!data.confirmation.stale))action("继续按审核意见修改","api/correct",{job_id:data.job_id,result_revision:data.review_revision});
+  for(const round of [...rounds].reverse()){
+    const card=node("details",undefined,"correction-round");card.dataset.key="correction-"+round.round;
+    const names={queued:"等待修改",checking:"修改已返回，核对中",awaiting_review:"等待复审",awaiting_caller:"等待当前 Codex 复审",approved:"复审通过",changes_requested:"需继续修改",unable_to_verify:"证据不足",paused_no_progress:"无进展，已暂停",paused_by_user:"已暂停",user_confirmed:"用户已确认结束"};
+    card.append(node("summary","第 "+round.round+" 轮 · "+(names[round.status]||round.status)));
+    card.append(node("h3","审核指出的问题"),node("p",round.review.summary));
+    if(round.review.change_requests?.length)for(const item of round.review.change_requests)card.append(changeRequestCard(item));
+    else for(const text of round.review.issues||[])card.append(node("p",text));
+    if(round.answer)card.append(node("h3","执行模型的修改回答"),node("pre",round.answer));
+    if(round.checks?.length)card.append(node("p","项目检查："+round.checks.map(c=>c.id+" "+(checkPassed(c)?"通过":"未通过")).join("；")));
+    if(round.final_review)card.append(node("h3","本轮复审结论"),node("p",reviewLabel(round.final_review.status)+" · "+round.final_review.summary));
+    $("correction-rounds").append(card);
+  }
+}
+function renderSubagents(data){
+  const phases=(data.phases||[]).filter(p=>p.role==="worker");
+  const rows=phases.flatMap(p=>(p.subagents?.agents||[]).map(a=>({...a,phase:p.id,phaseStatus:p.status,usage:p.routed_usage?.agents?.[a.id]})));
+  $("subagents-results").hidden=!rows.length;$("subagents-cards").replaceChildren();
+  const reports=phases.map(p=>p.routed_usage).filter(u=>u?.requests);
+  const complete=reports.length&&reports.every(u=>u.complete);
+  $("subagents-usage").textContent="执行端与子任务共转发 "+reports.reduce((n,u)=>n+u.requests,0)+" 次请求 · "+(complete?"上游报告输入 "+reports.reduce((n,u)=>n+u.input_tokens,0)+" / 输出 "+reports.reduce((n,u)=>n+u.output_tokens,0)+" token":"上游用量不完整，合计未知")+"。这份用量包含执行主模型，不与 CLI 用量相加；费用未知。";
+  const states={pending_init:"准备中",running:"执行中",completed:"已返回",errored:"执行失败",interrupted:"已中断",shutdown:"已关闭",not_found:"未找到",unknown:"状态待确认"};
+  for(const a of rows){
+    const unfinished=!a.closed&&a.phaseStatus&&a.phaseStatus!=="running";
+    const card=node("article",undefined,"subagent-card"+(["errored","interrupted","not_found"].includes(a.status)||unfinished?" has-problem":""));
+    card.append(node("h3",(states[a.status]||a.status)+(a.closed?" · 已收尾":" · 尚未确认收尾")),node("p",a.model||"沿用执行模型","hint"));
+    card.append(node("p",(a.goal||"未记录子任务目标").slice(0,140)+(a.goal?.length>140?"…":"")));
+    if(unfinished)card.append(node("p","执行阶段已停止，请核对子任务结果与已有改动后再恢复。","form-error"));
+    const goal=node("details");goal.append(node("summary","子任务指示"),node("pre",a.goal||"未记录指示"));
+    card.append(goal,node("h4","子任务回答"),node("pre",a.answer||"尚未收到回答"));
+    if(a.usage?.complete)card.append(node("p","输入 "+a.usage.input_tokens+" / 输出 "+a.usage.output_tokens+" token","hint"));
+    else card.append(node("p","单个子任务用量：接口未提供可归属的完整记录。","hint"));
+    card.append(node("small",a.phase+" · "+a.id));$("subagents-cards").append(card);
+  }
+}
+function addDelegationTask(){
+  const row=node("fieldset",undefined,"delegation-task");row.append(node("legend","子任务"));
+  const goal=node("textarea");goal.rows=2;goal.placeholder="具体目标与预期结果";goal.dataset.field="goal";
+  const access=node("select");access.dataset.field="access";for(const [value,text] of [["read","只读分析"],["write","允许修改指定文件"]]){const o=node("option",text);o.value=value;access.append(o);}
+  const files=node("textarea");files.rows=2;files.placeholder="项目内文件路径，每行一个，例如 src/parser.py";files.dataset.field="files";
+  for(const [text,input] of [["子任务目标",goal],["文件操作",access],["相关文件 / 独占写入范围",files]]){const label=node("label",text);label.append(input);row.append(label);}
+  const remove=node("button","移除这项分工");remove.type="button";remove.addEventListener("click",()=>row.remove());row.append(remove);$("subagents-tasks").append(row);
+}
+function delegationSelection(){
+  const value={mode:$("subagents-mode").value},concurrency=$("subagents-concurrency").value;
+  if(concurrency){const n=Number(concurrency);if(!Number.isInteger(n)||n<1||n>100)throw new Error("同时运行数量请填 1 到 100 的整数。");value.max_concurrent=n;}
+  if(value.mode==="manual"){
+    value.tasks=[...$("subagents-tasks").children].map(row=>({goal:row.querySelector('[data-field="goal"]').value.trim(),access:row.querySelector('[data-field="access"]').value,files:row.querySelector('[data-field="files"]').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)}));
+    if(!value.tasks.length||value.tasks.some(t=>!t.goal||!t.files.length))throw new Error("请填写每项分工的目标与文件范围。");
+  }
+  return value;
+}
+$("subagents-concurrency").disabled=true;
+$("subagents-mode").addEventListener("change",()=>{$("subagents-concurrency").disabled=$("subagents-mode").value==="off";$("subagents-manual").hidden=$("subagents-mode").value!=="manual";if(!$("subagents-manual").hidden&&!$("subagents-tasks").children.length)addDelegationTask();});
+$("subagents-add").addEventListener("click",addDelegationTask);
 function render(data) {
   const open=new Set([...document.querySelectorAll("details[open]")].map(d=>d.dataset.key).filter(Boolean));
   $("request").textContent=data.request||"尚未记录任务";$("project").textContent=data.project||"";
@@ -427,7 +505,7 @@ function render(data) {
   renderFailure(data.failure);
   if(data.failure)$("failure").prepend(node("div","所选任务记录 · "+(data.updated_at?new Date(data.updated_at*1000).toLocaleString():data.title),"hint"));
   $("task-state").replaceWith(Object.assign(badge(data.state),{id:"task-state"}));
-  renderResult(data);renderIssues(data);renderProgress(data);
+  renderResult(data);renderIssues(data);renderProgress(data);renderSubagents(data);renderCorrections(data);
   for(const role of ["planner","worker"])renderRole(role,data);
   renderHandoffs(data);
   $("checks").replaceChildren();for(const check of data.checks||[]){const box=node("div",undefined,"check");box.append(node("strong",check.id+" · "+(check.exit_code===0&&!check.failure?"通过":"未通过")),node("pre",[check.failure,check.stdout_tail,check.stderr_tail].filter(Boolean).join("\n")));$("checks").append(box);}
@@ -493,16 +571,16 @@ window.addEventListener("focus",()=>refresh(true));
 function callerReady(){try{RelayCompose.callerPlan(callerDraft,$("launch-project").value,$("launch-request").value,$("launch-extra").value);return true;}catch(error){return false;}}
 function launchMode(){
   const mode=$("launch-mode").value;
-  $("request-label").hidden=mode==="plan";$("request-title").textContent=mode==="caller"&&callerDraft?"从当前对话带入的任务":mode==="caller"?"给当前 Codex 的任务指示":"给规划模型的任务指示";
-  $("launch-request").readOnly=mode==="caller"&&!!callerDraft;
-  $("caller-copy").hidden=mode==="caller"&&!!callerDraft;
+  $("request-label").hidden=mode==="plan";$("request-title").textContent=mode==="caller"&&callerDraft?(callerDraft.invocation_id?"从当前对话带入的任务":"上次保存的任务（可点击新任务切换）"):mode==="caller"?"给当前 Codex 的任务指示":"给规划模型的任务指示";
+  $("launch-request").readOnly=mode==="caller"&&!!callerDraft?.plan;
+  $("caller-copy").hidden=mode==="caller"&&!!callerDraft?.plan;
   $("plan-label").hidden=mode!=="plan";$("caller-draft").hidden=mode!=="caller";
   const ready=mode!=="caller"||callerReady();
   $("launch-start").disabled=!launchEnabled||!!pendingJob||!ready;
   $("launch-start").textContent=pendingJob?"任务进行中…":repeatReady?"再次运行":"开始任务";
   $("caller-start").disabled=$("launch-start").disabled;
   $("caller-start").textContent=pendingJob?"任务进行中…":"确认并开始任务";
-  if(mode==="caller")$("caller-note").textContent=ready?"任务与方案已从当前对话带入。确认后点“开始任务”即可；需要调整时填写补充要求，一起交给执行模型。":"请在当前 Codex 对话里说明任务并调用插件；任务与方案准备好后会自动带入这里。";
+  if(mode==="caller")$("caller-note").textContent=callerDraft?.status==="blocked"?"当前任务未准备成功，原因与处理方法见下方。旧方案不会用于这次任务。":callerDraft?.status==="preparing"?"已收到这次任务，当前 Codex 正在准备方案；准备完成后才能开始。":ready?"任务与方案已带入。确认后点“开始任务”即可；需要调整时填写补充要求。":"请在当前 Codex 对话里说明任务并调用插件；任务与方案准备好后会自动带入这里。";
   for(const id of ["launch-worker-provider","launch-worker-model","worker-apply"])$(id).disabled=!!pendingJob;
   updateLaunchModels();
 }
@@ -513,6 +591,7 @@ async function loadDraft(automatic=false){
   try{
     const data=await api("api/draft"+(automatic&&loadedDraftId?"?after="+encodeURIComponent(loadedDraftId):""));
     if(data.changed===false)return;
+    if(data.draft?.id===dismissedDraftId)return;
     const previous=callerDraft;callerDraft=data.draft;
     const preview=$("draft-preview");preview.replaceChildren();
     if(callerDraft){
@@ -520,7 +599,13 @@ async function loadDraft(automatic=false){
       $("launch-project").value=fields.project;$("launch-request").value=fields.request;$("launch-extra").value=fields.supplement;
       loadedDraftGoal=fields.request;loadedDraftId=callerDraft.id||"";
       if(automatic)$("launch-mode").value="caller";
-      preview.append(node("p",callerDraft.user_request?"已带入你之前交代的任务。":"这里显示的是上次保存的任务。","hint"));
+      if(!callerDraft.plan){
+        preview.append(node("p",callerDraft.status==="blocked"?"这次任务准备失败。":"已收到这次任务，正在准备方案。",callerDraft.status==="blocked"?"form-error":"hint"));
+        if(callerDraft.error){preview.append(node("p",callerDraft.error.message,"form-error"),node("p","处理方法："+callerDraft.error.action),node("small","错误代码："+callerDraft.error.code));}
+        if(callerDraft.generated_project)preview.append(node("p","已为这次独立创作任务建立工作目录："+callerDraft.project,"hint"));
+        launchMode();return;
+      }
+      preview.append(node("p",callerDraft.invocation_id?"已带入本次调用的任务与方案。":"这里显示的是上次保存的任务，可点击新任务切换。","hint"));
       const task=node("p");task.append(node("strong","这次要做的事："),node("span",callerDraft.plan.goal));preview.append(task);
       readable(preview,{steps:callerDraft.plan.steps},{stepsInDetails:true});
       const location=node("details");location.append(node("summary","查看执行目录"),node("p",callerDraft.project,"path"));preview.append(location);
@@ -566,6 +651,11 @@ $("worker-refresh").addEventListener("click",()=>loadWorkerModels(true));
 $("worker-apply").addEventListener("click",async()=>{try{await applyWorker();}catch(error){$("worker-note").textContent=error.message;}});
 $("launch-mode").addEventListener("change",launchMode);
 $("draft-refresh").addEventListener("click",()=>loadDraft(false));
+$("caller-new").addEventListener("click",()=>{
+  dismissedDraftId=callerDraft?.id||loadedDraftId;callerDraft=null;loadedDraftGoal="";
+  $("launch-request").value="";$("launch-extra").value="";$("draft-preview").replaceChildren();
+  launchMode();$("launch-request").focus();
+});
 $("launch-project").addEventListener("input",()=>{launchMode();$("launch-message").textContent="项目目录已更改；点击开始将重新检查项目。";});
 for(const id of ["launch-request","launch-extra"])$(id).addEventListener("input",launchMode);
 $("caller-copy").addEventListener("click",async()=>{
@@ -582,7 +672,8 @@ $("launch-form").addEventListener("submit",async event=>{
     const body={project:$("launch-project").value.trim()};
     const extra=$("launch-extra").value.trim();
     body.review_mode="user_choice";
-    if($("launch-mode").value==="caller"){body.plan=RelayCompose.callerPlan(callerDraft,body.project,$("launch-request").value,extra);body.user_request=RelayCompose.executionRequest($("launch-request").value,extra);}
+    body.subagents=delegationSelection();
+    if($("launch-mode").value==="caller"){body.plan=RelayCompose.callerPlan(callerDraft,body.project,$("launch-request").value,extra);body.user_request=RelayCompose.executionRequest($("launch-request").value,extra);body.draft_id=callerDraft.id;}
     else if($("launch-mode").value==="plan")body.plan=RelayCompose.withSupplement(JSON.parse($("launch-plan").value),extra);
     else body.request=RelayCompose.executionRequest($("launch-request").value,extra);
     await applyWorker();

@@ -72,6 +72,10 @@ def serve(store, reader, writer):
                             value = store.wait(**args)
                         elif name == "relay_record_review":
                             value = store.record_review(**args)
+                        elif name == "relay_correct":
+                            value = store.correct_result(**args)
+                        elif name == "relay_pause_corrections":
+                            value = store.pause_corrections(**args)
                         else:
                             value = store.resume(**args)
                         # One compact text representation; avoid duplicating it in structuredContent.
@@ -97,7 +101,11 @@ def main():
     parser.add_argument("--open-panel", action="store_true", help="Print a reusable GUI URL without starting models")
     parser.add_argument("--open-browser", action="store_true", help="With --open-panel, also open the URL in the system browser")
     parser.add_argument("--prepare-plan", help="UTF-8 JSON file with project and plan; save a caller draft without model calls")
+    parser.add_argument("--open-task", help="UTF-8 JSON with user_request and optional project; show the new task before planning")
     parser.add_argument("--record-review", help="UTF-8 JSON with job_id, result_revision and the caller-planner's review")
+    parser.add_argument("--wait-job", help="Read/wait for a job using this installed version; no model call")
+    parser.add_argument("--seconds", type=int, default=50, help="Local wait duration, 0..50 seconds")
+    parser.add_argument("--full-result", action="store_true", help="Include complete saved execution and correction evidence")
     parser.add_argument("--config")
     parser.add_argument("--runs-root", default=str(Path(__file__).parent / "runs" / "plugin"))
     parser.add_argument("--projects-root", action="append")
@@ -108,6 +116,15 @@ def main():
     if not args.config or not args.projects_root:
         parser.error("--config and --projects-root are required; run configure_plugin.py first")
     store = JobStore(args.config, args.runs_root, args.projects_root)
+    if args.open_task:
+        from relaylib.contracts import load_json
+        value = load_json(args.open_task, MAX_MESSAGE)
+        validate(value, next(t["inputSchema"] for t in TOOLS if t["name"] == "relay_open_panel"))
+        print(json.dumps(store.open_panel(**value), ensure_ascii=False))
+        return
+    if args.wait_job:
+        print(json.dumps(store.wait(args.wait_job, args.seconds, full_result=args.full_result), ensure_ascii=False))
+        return
     if args.record_review:
         from relaylib.contracts import load_json
         value = load_json(args.record_review, MAX_MESSAGE)

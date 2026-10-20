@@ -14,7 +14,11 @@ from .runner import ROOT, Runner, TERMINAL, read_config
 from .diagnostics import describe_failure
 from .runtime import FileLock, atomic_json
 from .review import read_review, read_confirmation, revision as review_revision, save_review, target_fingerprint
+from .review import validate_correction_review
 from .contracts import schemas
+from . import subagents
+from . import corrections
+from . import drafts
 
 
 def encoded(value):
@@ -41,24 +45,32 @@ HANDOFF = obj({"goal": string(),
                "constraints": array(string())}, ["goal", "files", "steps"])
 JOB_ID = {"type": "string", "pattern": "[a-f0-9]{24}"}
 TOOLS = [
-    {"name": "relay_open_panel", "description": "Start or reuse the local collaboration GUI. Opening it never starts models. Return URL for the caller to open in its browser panel.",
-     "inputSchema": obj({"open_browser": {"type": "boolean"}}, []),
+    {"name": "relay_open_panel", "description": "Open the GUI. When invoked with a task, pass its exact user_request NOW: it replaces stale tasks immediately, disables Start while planning and returns invocation_id/project for relay_prepare. Omit project for a new standalone artifact to create an isolated committed task workspace; specify project for existing code. No model calls. Prepare the plan before implementing the artifact yourself.",
+     "inputSchema": obj({"open_browser": {"type": "boolean"}, "user_request": string(100000), "project": string(1000)}, []),
      "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
-    {"name": "relay_prepare", "description": "Bring a task-bearing invocation directly into the panel: save the caller plan, original user_request and actual execution requirements in instructions. Do not ask the user to retype the task. Open the panel with ?draft=<draft_id> after preparing. Instructions join worker constraints: keep workflow-only 'prepare, do not start yet' instructions out of them. Local files only; no model call.",
+    {"name": "relay_prepare", "description": "Save the caller plan, original user_request, instructions and invocation_id returned by task-aware relay_open_panel. Do not implement the deliverable first. For new outputs use an existing README/code file as the facts anchor, and name future output paths in steps. New tasks appear as preparing before this call; failures appear as blocked, never as the old plan. Local only, no model call.",
      "inputSchema": obj({"project": string(1000), "plan": HANDOFF,
-                         "user_request": string(100000), "instructions": array(string())}, ["project", "plan"]),
+                         "user_request": string(100000), "instructions": array(string()), "invocation_id": JOB_ID}, ["project", "plan"]),
      "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
     {"name": "relay_submit", "description": "Execute an existing concise plan, preserving user_request. Set review_mode=user_choice to let the user confirm the answer or request original-planner review; auto requests a review after execution. Same project/task_key is idempotent.",
      "inputSchema": obj({"project": string(1000), "task_key": {"type": "string", "pattern": "[A-Za-z0-9_-]{1,64}"},
                          "plan": HANDOFF, "user_request": string(100000),
-                         "review_mode": {"type": "string", "enum": ["user_choice", "auto"]}}, ["project", "task_key", "plan"]),
+                         "review_mode": {"type": "string", "enum": ["user_choice", "auto"]},
+                         "subagents": subagents.SCHEMA, "draft_id": JOB_ID}, ["project", "task_key", "plan"]),
      "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True}},
     {"name": "relay_wait", "description": "Wait locally up to 50 seconds. Returns a compact result; pass after_revision to suppress unchanged content. No model calls.",
      "inputSchema": obj({"job_id": JOB_ID, "seconds": {"type": "integer"}, "after_revision": string(64),
                          "full_result": {"type": "boolean"}}, ["job_id"]),
      "annotations": {"readOnlyHint": True, "openWorldHint": False}},
-    {"name": "relay_record_review", "description": "The current Codex records its own review when the user chooses Codex to audit a finished task. Read the saved plan, full answer, checks and relevant files first. No model calls or execution reruns. Supply review_revision from relay_wait; stale evidence is rejected.",
-     "inputSchema": obj({"job_id": JOB_ID, "result_revision": string(64), "review": schemas()["review"]}),
+    {"name": "relay_record_review", "description": "Record this Codex conversation's evidence-based review. changes_requested queues the original execution model to fix issues when auto_correct=true (default), potentially incurring provider usage; after correction this conversation must review again. Supply concrete change_requests and the current result_revision. Approval/insufficient-evidence records do not call models. Stale evidence is rejected.",
+     "inputSchema": obj({"job_id": JOB_ID, "result_revision": string(64), "review": schemas()["review"],
+                         "auto_correct": {"type": "boolean"}}, ["job_id", "result_revision", "review"]),
+     "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+    {"name": "relay_correct", "description": "Explicitly continue a rejected review or paused correction cycle with the original worker and same reviewer. Preserves edits and cumulative budgets; may incur model usage.",
+     "inputSchema": obj({"job_id": JOB_ID, "result_revision": string(64)}),
+     "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+    {"name": "relay_pause_corrections", "description": "Request a pause before the next model stage of a correction cycle. The current stage may finish and be billed. Local flag only; no new model call.",
+     "inputSchema": obj({"job_id": JOB_ID}),
      "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}},
     {"name": "relay_resume", "description": "Explicitly recover a stopped job, or provide a revised plan for awaiting_plan. Retains cumulative request budget.",
      "inputSchema": obj({"job_id": JOB_ID, "plan": HANDOFF, "retry_interrupted": {"type": "boolean"}}, ["job_id"]),
@@ -106,8 +118,8 @@ def usage_report(directory):
     for key in ("input_tokens", "cached_input_tokens", "output_tokens"):
         values = [r.get(key) if isinstance(r, dict) else None for r in reports]
         totals[key] = sum(values) if values and not incomplete and all(type(v) is int and v >= 0 for v in values) else None
-    return {**totals, "source": "CLI reported; cached input is a subset of input", "cost_usd": None,
-            "auxiliary_calls": None}
+    return {**totals, "source": "CLI reported parent turns; cached input is a subset of input; child usage is separate", "cost_usd": None,
+            "auxiliary_calls": None, "routed_usage": subagents.routed_usage(directory / "requests.jsonl")}
 
 
 def concise_result(value):
@@ -147,20 +159,56 @@ class JobStore:
                                      start_new_session=os.name != "nt", cwd=ROOT)
         self.children.append(child)
 
-    def open_panel(self, open_browser=False):
+    def open_panel(self, open_browser=False, user_request=None, project=None):
         from .panel_runtime import open_panel
-        return open_panel(self, open_browser)
+        context = None
+        if user_request is not None:
+            validate(user_request, string(100000), "user_request")
+            context = drafts.begin(self.root, self.projects, user_request, project)
+        elif project is not None:
+            fail("protocol_error", "project requires the current user_request")
+        result = open_panel(self, open_browser)
+        if context:
+            result["task"] = context
+            result["next"] = "Call relay_prepare with this project, invocation_id, original user_request and a concise plan. Do not implement the artifact before handoff. Start remains disabled until preparation succeeds."
+        return result
 
-    def submit(self, project, task_key, plan, user_request=None, review_mode=None):
+    def submit(self, project, task_key, plan, user_request=None, review_mode=None, subagents=None, draft_id=None):
+        if draft_id is not None:
+            draft = self.draft()
+            if not draft or draft.get("id") != draft_id or not draft.get("plan") or draft.get("status", "ready") != "ready" or Path(project).resolve() != Path(draft["project"]).resolve():
+                fail("draft_stale", "The displayed plan was replaced or preparation failed; refresh the current task")
         operation = {"action": "start", "plan": plan}
         if user_request is not None:
             validate(user_request, string(100000), "user_request")
             operation["request"] = user_request
         if review_mode is not None:
             operation["review_mode"] = review_mode
+        if subagents is not None:
+            operation["subagents"] = subagents
         return self._submit(project, task_key, operation)
 
-    def prepare(self, project, plan, user_request=None, instructions=None):
+    def prepare(self, project, plan, user_request=None, instructions=None, invocation_id=None):
+        request = user_request or (plan.get("goal", "") if isinstance(plan, dict) else "")
+        current = self.draft() or {}
+        if invocation_id:
+            validate(invocation_id, JOB_ID)
+            if current.get("invocation_id") != invocation_id:
+                fail("draft_stale", "This invocation was replaced by a newer task")
+            if request.strip() != current.get("user_request", "").strip() or Path(project).resolve() != Path(current["project"]).resolve():
+                fail("draft_stale", "Task or project changed; start a new task-bearing invocation")
+        elif current.get("status") in ("preparing", "blocked") and current.get("invocation_id"):
+            if request.strip() != current.get("user_request", "").strip():
+                fail("draft_stale", "A different task is being prepared")
+            invocation_id = current["invocation_id"]
+        try:
+            return self._prepare(project, plan, user_request, instructions, invocation_id)
+        except (RelayError, OSError) as exc:
+            if getattr(exc, "code", None) != "draft_stale":
+                drafts.failure(self.root, project, request, exc, invocation_id)
+            raise
+
+    def _prepare(self, project, plan, user_request=None, instructions=None, invocation_id=None):
         project = Path(project).resolve()
         if not any(project == p or project.is_relative_to(p) for p in self.projects):
             fail("project_denied", "Project is outside the configured allowed roots")
@@ -178,27 +226,30 @@ class JobStore:
         from .runner import code_fact_snapshot
         facts = code_fact_snapshot(project, expanded)
         value = {"project": str(project), "plan": copy.deepcopy(plan), "code_facts": facts}
+        if invocation_id:
+            value["invocation_id"] = invocation_id
+            if (self.draft() or {}).get("generated_project"):
+                value["generated_project"] = True
         if user_request is not None:
             value["user_request"] = user_request
         if instructions is not None:
             value["instructions"] = list(instructions)
         identity = hashlib.sha256(encoded(value).encode()).hexdigest()[:24]
-        self.root.mkdir(parents=True, exist_ok=True)
-        with FileLock(self.root / ".draft.lock"):
-            atomic_json(self.root / ".caller-plan.json", {**value, "id": identity, "created_at": time.time()})
+        drafts.save(self.root, {**value, "id": identity, "status": "ready", "created_at": time.time()}, invocation_id)
         return {"draft_id": identity, "project": str(project), "goal": plan["goal"], "model_calls": 0,
                 "next": "Review the current caller's plan in the panel; Start calls only the execution model."}
 
     def draft(self):
-        path = self.root / ".caller-plan.json"
-        return load_json(path, 2_000_000) if path.is_file() else None
+        return drafts.read(self.root)
 
-    def submit_task(self, project, task_key, request, review_mode=None):
+    def submit_task(self, project, task_key, request, review_mode=None, subagents=None):
         if not isinstance(request, str) or not request.strip():
             fail("protocol_error", "Task request is required")
         operation = {"action": "plan_and_run", "request": request}
         if review_mode is not None:
             operation["review_mode"] = review_mode
+        if subagents is not None:
+            operation["subagents"] = subagents
         return self._submit(project, task_key, operation)
 
     def _submit(self, project, task_key, operation):
@@ -206,6 +257,8 @@ class JobStore:
             fail("protocol_error", "Unknown review mode")
         validate(task_key, {"type": "string", "pattern": "[A-Za-z0-9_-]{1,64}"})
         project = Path(project).resolve()
+        if "subagents" in operation:
+            operation["subagents"] = subagents.policy(operation["subagents"], project)
         if not any(project == p or project.is_relative_to(p) for p in self.projects):
             fail("project_denied", "Project is outside the configured allowed roots")
         if self.root.is_relative_to(project):
@@ -213,7 +266,7 @@ class JobStore:
         digest = hashlib.sha256(encoded({"project": os.path.normcase(str(project)), "task_key": task_key}).encode()).hexdigest()[:24]
         # Keep existing caller-plan idempotency keys compatible.
         payload = (operation["plan"] if operation["action"] == "start" and
-                   not {"request", "review_mode"}.intersection(operation) else operation)
+                   not {"request", "review_mode", "subagents"}.intersection(operation) else operation)
         payload_hash = hashlib.sha256(encoded(payload).encode()).hexdigest()
         directory = self.root / digest
         self.root.mkdir(parents=True, exist_ok=True)
@@ -224,6 +277,9 @@ class JobStore:
                     fail("task_key_conflict", "This task_key already has a different plan; resume it or choose a new task_key")
                 return {"job_id": digest, "status": "existing", "reused": True}
             config = execution_config(self.config)
+            if "subagents" in operation:
+                config["subagents"] = operation["subagents"]
+            subagents.policy(config.get("subagents"), project)
             if operation.get("review_mode") == "user_choice":
                 config["review"] = False
             elif operation.get("review_mode") == "auto":
@@ -267,7 +323,18 @@ class JobStore:
         state = load_json(run / "state.json") if (run / "state.json").exists() else {}
         status = (state.get("status", service["status"]) if active or service["status"] == "finished"
                   else "interrupted" if service["status"] in ("queued", "running") else "stopped")
-        row = {"job_id": job_id, "status": status, "active": active}
+        row = {"job_id": job_id, "status": status, "active": active,
+               "review_state": state.get("review_state"), "review_cycle": corrections.public_cycle(state),
+               "correction_round": state.get("correction_round", 0)}
+        if full_result:
+            row["correction_history"] = corrections.history(run)
+        children = []
+        for phase in sorted(run.glob("[0-9]*-worker")):
+            finished = load_json(phase / "finished.json") if (phase / "finished.json").is_file() else {}
+            records = finished.get("subagents") or subagents.lifecycle(phase / "events.jsonl")
+            children.extend({**agent, "phase": phase.name} for agent in records["agents"])
+        if children:
+            row["subagents"] = children if full_result else [{k: a[k] for k in ("id", "phase", "status", "closed") if k in a} for a in children]
         if not active:
             row.update(artifacts=str(run), result=copy.deepcopy(state.get("last_result")) if full_result else concise_result(state.get("last_result")),
                        checks=(copy.deepcopy(state.get("validation") or []) if full_result else
@@ -295,7 +362,7 @@ class JobStore:
         run = self.directory(job_id) / "relay"
         state = load_json(run / "state.json")
         if (state.get("pending") or state.get("failure") or state.get("status") not in
-                ("completed", "needs_manual_verification", "exhausted") or
+                ("completed", "needs_manual_verification", "exhausted", "review_paused") or
                 (state.get("last_result") or {}).get("status") != "completed"):
             fail("state_error", "There is no finished execution result to confirm")
         if review_revision(run, state) != result_revision:
@@ -313,9 +380,16 @@ class JobStore:
                      "summary": "用户已阅读执行结果，自行确认审核完毕并结束流程。",
                      "acknowledged_residual": list(range(len(state["last_result"].get("residual", []))))}
             atomic_json(run / "confirmation.json", value)
+            if state.get("review_cycle"):
+                state["review_cycle"].update(active=False, paused=False, reason="user_confirmed")
+                state["review_state"] = "user_confirmed"
+                corrections.update_round(run, state, status="user_confirmed")
+                atomic_json(run / "state.json", state)
         return {"job_id": job_id, "status": "user_confirmed", "confirmation": value, "model_calls": 0}
 
-    def request_review(self, job_id, result_revision, reviewer=None):
+    def request_review(self, job_id, result_revision, reviewer=None, auto_correct=True):
+        if type(auto_correct) is not bool:
+            fail("protocol_error", "auto_correct must be a boolean")
         directory = self.directory(job_id)
         with FileLock(directory / "service.lock"):
             run, state = self._confirmable(job_id, result_revision)
@@ -332,8 +406,9 @@ class JobStore:
             confirmation = read_confirmation(run, state)
             if confirmation and not confirmation["stale"]:
                 fail("state_error", "User already confirmed this result")
+            (run / "correction-pause.json").unlink(missing_ok=True)
             atomic_json(run / "reviewer-target.json", {**target, "result_revision": result_revision})
-            atomic_json(directory / "operation.json", {"action": "review", "result_revision": result_revision})
+            atomic_json(directory / "operation.json", {"action": "review", "result_revision": result_revision, "auto_correct": auto_correct})
             atomic_json(directory / "service.json", {"status": "queued", "time": time.time()})
         try:
             self.launch(directory)
@@ -342,7 +417,12 @@ class JobStore:
             raise
         return {"job_id": job_id, "status": "queued"}
 
-    def record_review(self, job_id, result_revision, review):
+    def record_review(self, job_id, result_revision, review, auto_correct=True):
+        if type(auto_correct) is not bool:
+            fail("protocol_error", "auto_correct must be a boolean")
+        validate(review, schemas()["review"], "review")
+        if auto_correct:
+            validate_correction_review(review)
         directory = self.directory(job_id)
         with FileLock(directory / "service.lock"):
             if self.snapshot(job_id).get("active"):
@@ -350,12 +430,55 @@ class JobStore:
             run = directory / "relay"
             state = load_json(run / "state.json")
             if (state.get("pending") or state.get("failure") or state.get("status") not in
-                    ("completed", "needs_manual_verification", "exhausted") or
+                    ("completed", "needs_manual_verification", "exhausted", "review_paused") or
                     (state.get("last_result") or {}).get("status") != "completed"):
                 fail("state_error", "Finish execution or resolve its failure before recording a final review")
             reviewer = "当前 Codex（原规划端）" if state.get("plan_source") == "caller" else "当前 Codex（用户指定审核）"
-            value = save_review(run, state, result_revision, review, reviewer)
+            confirmation = read_confirmation(run, state)
+            if review.get("status") == "changes_requested" and confirmation and not confirmation["stale"]:
+                fail("state_error", "User already confirmed this result")
+            value = save_review(run, state, result_revision, review, reviewer, source="caller")
+            state["review_cycle"] = {"kind": "caller", "auto_correct": auto_correct, "active": False}
+            state["review_state"] = review["status"]
+            corrections.update_round(run, state, status=review["status"], final_review=value)
+            atomic_json(run / "state.json", state)
+            if review["status"] == "changes_requested" and auto_correct:
+                atomic_json(directory / "operation.json", {"action": "correct", "result_revision": result_revision})
+                atomic_json(directory / "service.json", {"status": "queued", "time": time.time()})
+        if review["status"] == "changes_requested" and auto_correct:
+            self._launch_correction(directory)
+            return {"job_id": job_id, "status": "queued", "review": value, "next": "Use relay_wait; read the new result/version and review it yourself in this conversation. Do not start another reviewer model or repeat task submission. Stop on approval, insufficient evidence, a blocker or a paused cycle.", "review_model_calls": 0, "execution_queued": True, "cost_usd": None}
         return {"job_id": job_id, "review": value, "model_calls": 0}
+
+    def _launch_correction(self, directory):
+        try:
+            self.launch(directory)
+        except OSError:
+            atomic_json(directory / "service.json", {"status": "stopped", "error": "launch_failed", "time": time.time()})
+            raise
+
+    def correct_result(self, job_id, result_revision):
+        directory = self.directory(job_id)
+        with FileLock(directory / "service.lock"):
+            run, state = self._confirmable(job_id, result_revision)
+            confirmation = read_confirmation(run, state)
+            if confirmation and not confirmation["stale"]:
+                fail("state_error", "User already confirmed this result")
+            review = read_review(run, state)
+            if state["status"] != "review_paused" and (not review or review["stale"] or review["status"] != "changes_requested"):
+                fail("state_error", "There is no rejected review to correct")
+            atomic_json(directory / "operation.json", {"action": "correct", "result_revision": result_revision, "allow_retry": True})
+            atomic_json(directory / "service.json", {"status": "queued", "time": time.time()})
+        self._launch_correction(directory)
+        return {"job_id": job_id, "status": "queued"}
+
+    def pause_corrections(self, job_id):
+        directory = self.directory(job_id)
+        state = load_json(directory / "relay/state.json")
+        if not state.get("review_cycle", {}).get("active"):
+            fail("state_error", "There is no active review correction cycle")
+        atomic_json(directory / "relay/correction-pause.json", {"requested_at": time.time()})
+        return {"job_id": job_id, "status": "pause_requested", "model_calls": 0}
 
     def wait(self, job_id, seconds=20, after_revision=None, full_result=False):
         if type(seconds) is not int or not 0 <= seconds <= 50:
@@ -461,7 +584,9 @@ def execute_job(directory):
                 elif operation["action"] == "replan":
                     runner.resume_with_plan(operation["plan"])
                 elif operation["action"] == "review":
-                    runner.review_result(operation["result_revision"])
+                    runner.review_result(operation["result_revision"], operation.get("auto_correct", True))
+                elif operation["action"] == "correct":
+                    runner.correct_review(operation["result_revision"], operation.get("allow_retry", False))
                 else:
                     runner.resume(operation.get("retry_interrupted", False))
         except (RelayError, OSError, ValueError) as exc:
