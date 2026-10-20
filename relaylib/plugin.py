@@ -19,6 +19,7 @@ from .contracts import schemas
 from . import subagents
 from . import corrections
 from . import drafts
+from . import assistance
 
 
 def encoded(value):
@@ -45,6 +46,12 @@ HANDOFF = obj({"goal": string(),
                "constraints": array(string())}, ["goal", "files", "steps"])
 JOB_ID = {"type": "string", "pattern": "[a-f0-9]{24}"}
 TOOLS = [
+    {"name": "relay_pending_help", "description": "Read execution questions waiting for this caller Codex. Read-only, no model calls. When relay_wait returns awaiting_help, inspect necessary facts and answer with relay_answer_help; do not start another task or another model.",
+     "inputSchema": obj({"job_id": JOB_ID}, []),
+     "annotations": {"readOnlyHint": True, "openWorldHint": False}},
+    {"name": "relay_answer_help", "description": "Answer a versioned pending worker question as the current Codex. Queues the original execution model in a fresh context, preserving files and cumulative usage; provider usage may incur cost. Do not change project files while answering. Stale questions are rejected.",
+     "inputSchema": obj({"job_id": JOB_ID, "help_revision": string(64), "answer": string(100000)}),
+     "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
     {"name": "relay_open_panel", "description": "Bring the exact user_request into the GUI and open its URL first. In the SAME invocation, continue planning as the current Codex: inspect relevant facts read-only, then call relay_prepare with the returned project/invocation_id. Stop when the saved plan is ready for confirmation; no separate follow-up is required. Preparation must not implement the task, generate deliverables, edit task files, run implementation commands or call relay_submit. Execution requires the user's Start click or separate authorization. Honor an explicit open-only request. Omit project for a new standalone artifact; specify project for existing code. This tool makes no model calls.",
      "inputSchema": obj({"open_browser": {"type": "boolean"}, "user_request": string(100000), "project": string(1000)}, []),
      "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
@@ -58,7 +65,7 @@ TOOLS = [
                          "review_mode": {"type": "string", "enum": ["user_choice", "auto"]},
                          "subagents": subagents.SCHEMA, "draft_id": JOB_ID}, ["project", "task_key", "plan"]),
      "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True}},
-    {"name": "relay_wait", "description": "Wait locally up to 50 seconds. Returns a compact result; pass after_revision to suppress unchanged content. No model calls.",
+    {"name": "relay_wait", "description": "Wait locally up to 50 seconds. Returns on worker help requests as well as completion. If awaiting_help, answer the concrete question with relay_answer_help, then continue waiting. Pass after_revision to suppress unchanged content. No model calls.",
      "inputSchema": obj({"job_id": JOB_ID, "seconds": {"type": "integer"}, "after_revision": string(64),
                          "full_result": {"type": "boolean"}}, ["job_id"]),
      "annotations": {"readOnlyHint": True, "openWorldHint": False}},
@@ -324,8 +331,13 @@ class JobStore:
         status = (state.get("status", service["status"]) if active or service["status"] == "finished"
                   else "interrupted" if service["status"] in ("queued", "running") else "stopped")
         row = {"job_id": job_id, "status": status, "active": active,
+               "compaction_count": state.get("compaction_count", 0),
                "review_state": state.get("review_state"), "review_cycle": corrections.public_cycle(state),
                "correction_round": state.get("correction_round", 0)}
+        if state.get("status") == "awaiting_help" and state.get("help_request"):
+            row["help_request"] = copy.deepcopy(state["help_request"])
+            row["caller_request"] = assistance.caller_request(job_id, state["help_request"], state["project"])
+            row["next"] = "Inspect necessary facts read-only, answer this question using relay_answer_help, then relay_wait. No new task or model is needed."
         if full_result:
             row["correction_history"] = corrections.history(run)
         children = []
@@ -354,6 +366,38 @@ class JobStore:
                 row["diagnostic"] = state.get("failure") or service.get("diagnostic")
         revision = hashlib.sha256(encoded(row).encode()).hexdigest()[:16]
         return {**row, "revision": revision}
+
+    def pending_help(self, job_id=None):
+        if job_id is not None:
+            directories = [self.directory(job_id)]
+        elif self.root.is_dir():
+            directories = sorted(p for p in self.root.iterdir() if p.is_dir() and not p.is_symlink()
+                                 and len(p.name) == 24 and all(c in "0123456789abcdef" for c in p.name))
+        else:
+            directories = []
+        rows, unreadable = [], []
+        for directory in directories:
+            if not (directory / "relay/state.json").is_file():
+                continue
+            try:
+                state = load_json(directory / "relay/state.json")
+                if state.get("status") == "awaiting_help" and state.get("help_request"):
+                    rows.append(self.snapshot(directory.name))
+            except (RelayError, OSError):
+                unreadable.append(directory.name)
+        return {"pending": rows, "unreadable_jobs": unreadable, "model_calls": 0}
+
+    def answer_help(self, job_id, help_revision, answer):
+        directory = self.directory(job_id)
+        with FileLock(directory / "service.lock"):
+            if self.snapshot(job_id).get("active"):
+                fail("busy", "Wait for the worker to pause")
+            state = load_json(directory / "relay/state.json")
+            assistance.validate_answer(state, help_revision, answer)
+            atomic_json(directory / "operation.json", {"action": "answer_help", "help_revision": help_revision, "answer": answer})
+            atomic_json(directory / "service.json", {"status": "queued", "time": time.time()})
+        self._launch_correction(directory)
+        return {"job_id": job_id, "status": "queued", "next": "Continue with relay_wait; the same worker receives this answer. No additional planner call.", "cost_usd": None}
 
     def _confirmable(self, job_id, result_revision):
         row = self.snapshot(job_id)
@@ -587,6 +631,8 @@ def execute_job(directory):
                     runner.review_result(operation["result_revision"], operation.get("auto_correct", True))
                 elif operation["action"] == "correct":
                     runner.correct_review(operation["result_revision"], operation.get("allow_retry", False))
+                elif operation["action"] == "answer_help":
+                    runner.answer_help(operation["help_revision"], operation["answer"])
                 else:
                     runner.resume(operation.get("retry_interrupted", False))
         except (RelayError, OSError, ValueError) as exc:

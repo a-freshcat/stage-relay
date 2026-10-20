@@ -17,11 +17,12 @@ from .diagnostics import describe_failure
 from .review import read_review, read_confirmation, revision as review_revision, save_review, validate_correction_review
 from . import corrections
 from . import subagents
+from . import assistance
 from .runtime import (FileLock, atomic_json, bounded_read, git, project_snapshot,
                       require_clean_project, run_process)
 
 ROOT = Path(__file__).resolve().parent.parent
-TERMINAL = {"completed", "needs_manual_verification", "blocked", "exhausted", "awaiting_plan", "review_paused"}
+TERMINAL = {"completed", "needs_manual_verification", "blocked", "exhausted", "awaiting_plan", "review_paused", "awaiting_help"}
 
 
 def positive(value, name, maximum=1_000_000):
@@ -359,6 +360,19 @@ class Runner:
             self.preflight(clean=False, roles=("worker",) if self.state.get("plan_source") == "caller" else None)
             return self._execute()
 
+    def answer_help(self, help_revision, answer):
+        assistance.validate_answer(self.state, help_revision, answer)
+        with self.project_lock():
+            if project_snapshot(self.project) != self.state["snapshot"]:
+                fail("project_changed", "Project changed while the worker was waiting for help")
+            self.preflight(clean=False, roles=("worker",))
+            question = self.state.pop("help_request")
+            self.state["help_answer"] = {"revision": help_revision, "question": question["question"], "answer": answer}
+            self.state.setdefault("help_history", []).append({**question, "answer": answer})
+            self.state.update(status="ready", next="worker", failure=None)
+            self.save()
+            return self._execute()
+
     def recover_pending(self):
         """A finished result can be recovered without paying for the stage again."""
         pending = self.state["pending"]
@@ -408,7 +422,11 @@ class Runner:
                 "as USER REQUEST unless the user explicitly requests another language. Preserve schema keys, "
                 "enum values, IDs, file paths and code identifiers.\n"
                 f"USER REQUEST:\n{request}\nCONFIGURED CHECKS (ID -> argv):\n{checks}\n")
-        base += subagents.instructions(self.config.get("subagents") if role == "worker" else None)
+        base += assistance.browser_guidance(windows=os.name == "nt")
+        base += subagents.instructions(self.config.get("subagents") if role == "worker" else None,
+                                       manual_completed=self.state.get("manual_delegation_completed", False))
+        if role == "worker":
+            base += assistance.prompt(self.state, ROOT / "skills/relay-context/SKILL.md")
         recovery = self.state.get("recovery")
         if recovery and recovery.get("role") == role:
             base += ("RECOVERY FROM PARTIAL WORK: Files from the interrupted stage were preserved. "
@@ -558,6 +576,7 @@ class Runner:
                                 idle_seconds=result["idle_seconds"],
                                 elapsed_seconds=result["elapsed_seconds"])
         result["usage"] = parse_events(directory / "events.jsonl")
+        result["format_repair"] = repair_from is not None
         result["model"] = spec["model"]
         result["subagents"] = subagents.lifecycle(directory / "events.jsonl", spec["model"])
         result["routed_usage"] = subagents.routed_usage(self.run_dir / "requests.jsonl", name)
@@ -565,6 +584,7 @@ class Runner:
             result["failure"] = "subagents_incomplete"
         delegation = subagents.policy(self.config.get("subagents"))
         if (not result["failure"] and role == "worker" and repair_from is None and delegation["mode"] == "manual"
+                and not self.state.get("manual_delegation_completed")
                 and len(result["subagents"]["agents"]) != len(delegation["tasks"])):
             result["failure"] = "subagents_incomplete"
         result["snapshot"] = project_snapshot(self.project)
@@ -593,7 +613,10 @@ class Runner:
             self.context.update(stage="验证模型结构化结果", path=str(directory / "response.json"))
             try:
                 value = load_json(directory / "response.json", self.config["limits"]["max_result_bytes"])
-                validate(value, self.definitions[kind], kind)
+                if role == "worker" and assistance.is_control(value) and not meta.get("format_repair"):
+                    assistance.validate_control(value)
+                else:
+                    validate(value, self.definitions[kind], kind)
                 if role == "reviewer" and self.state.get("review_cycle", {}).get("auto_correct", self.config.get("review_corrections", True)):
                     validate_correction_review(value)
             except RelayError as error:
@@ -612,6 +635,17 @@ class Runner:
     def _accept_stage(self, role, directory, meta):
         self.context.update(stage="验证模型结构化结果", path=str(directory / "response.json"))
         value = load_json(directory / "response.json", self.config["limits"]["max_result_bytes"])
+        if role == "worker" and assistance.is_control(value):
+            if meta.get("format_repair"):
+                fail("protocol_error", "Report-format repair cannot request a new worker action")
+            assistance.accept(self.state, value, directory.name, meta["snapshot"])
+            if self.config.get("subagents", {}).get("mode") == "manual":
+                self.state["manual_delegation_completed"] = True
+            self.state["attempts"].append({"role": role, "directory": directory.name, "usage": meta["usage"],
+                                           "elapsed_seconds": meta["elapsed_seconds"], "control": value["relay_control"]})
+            self.state.update(snapshot=meta["snapshot"], pending=None, failure=None)
+            self.save()
+            return
         if role == "reviewer":
             save_review(self.run_dir, self.state, review_revision(self.run_dir, self.state), value,
                         self.role_spec("reviewer")["model"], self.review_target().get("selection"))

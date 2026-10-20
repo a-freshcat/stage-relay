@@ -21,7 +21,10 @@ from relaylib.runtime import atomic_json
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plugin", action="store_true", help="Exercise caller-plan jobs with the real CLI and a fake SSE endpoint")
+    parser.add_argument("--context-help", action="store_true", help="Real CLI: checkpoint, caller help, fresh-context continuation; fixture replies only")
     args = parser.parse_args()
+    if args.plugin and args.context_help:
+        parser.error("Choose one smoke mode")
     parent = ROOT / "runs" / (("plugin-cli-" if args.plugin else "cli-protocol-") + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6])
     project = parent / "project"
     project.mkdir(parents=True)
@@ -55,7 +58,16 @@ def main():
                 self.end_headers()
                 self.wfile.write(error)
                 return
-            text = json.dumps(draft if body.get("model") == "gpt-6.1-sol" else outcome)
+            value = draft if body.get("model") == "gpt-6.1-sol" else outcome
+            if args.context_help:
+                checkpoints = [
+                    {"relay_control": "compact", "summary": "Fixture preserved; no edits needed", "completed": ["Inspected value.txt"],
+                     "next_steps": ["Confirm caller guidance and report"], "evidence": ["value.txt contains fixture"], "question": ""},
+                    {"relay_control": "help", "summary": "Awaiting a caller decision", "completed": ["Kept the fixture unchanged"],
+                     "next_steps": ["Return final result"], "evidence": ["No project changes"], "question": "Confirm that this protocol test requires no edits."},
+                    outcome]
+                value = checkpoints[min(len(seen) - 1, 2)]
+            text = json.dumps(value)
             content = {"type": "output_text", "text": text, "annotations": []}
             item = {"id": "msg_fixture", "type": "message", "role": "assistant", "status": "completed", "content": [content]}
             response = {"id": "resp_fixture", "object": "response", "created_at": int(time.time()), "model": body["model"],
@@ -91,6 +103,19 @@ def main():
         config[role]["max_requests"] = 2
     atomic_json(parent / "config.json", config)
     try:
+        if args.context_help:
+            config["review"] = False
+            config["worker"]["max_requests"] = 3
+            runner = Runner(config, project, parent / "relay")
+            state = runner.start_with_plan(draft, "Offline context/help protocol test; no edits or tools.")
+            assert state["status"] == "awaiting_help", state.get("failure")
+            assert len(seen) == 2
+            state = runner.answer_help(state["help_request"]["revision"], "Confirmed: keep value.txt unchanged and return completion.")
+            good = (state["status"] == "completed" and len(seen) == 3 and state["compaction_count"] == 1 and
+                    not any(s["has_schema"] or s["max_output_tokens"] is not None for s in seen))
+            atomic_json(parent / "observed.json", {"status": state["status"], "requests": seen, "mode": "LOCALHOST_FIXTURE_NO_PAID_MODELS"})
+            print(json.dumps({"status": state["status"], "observed": seen, "artifacts": str(parent)}, ensure_ascii=False))
+            return 0 if good else 1
         if args.plugin:
             from relaylib.plugin import JobStore
             store = JobStore(parent / "config.json", parent / "jobs", [project])

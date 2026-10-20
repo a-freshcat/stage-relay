@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 const roleNames = {planner: "规划 agent", worker: "执行 agent", reviewer: "模型审核"};
 const labels = {completed:"独立检查通过",running:"检查点：运行中",ready:"准备下一步",awaiting_recovery:"等待恢复",needs_manual_verification:"执行结束 · 未运行项目测试",blocked:"任务受阻",exhausted:"达到重试上限",accepted:"阶段结果已接纳",finished:"进程已结束",failed:"阶段失败",interrupted:"阶段未结束",unreadable:"日志暂不可读"};
 labels.awaiting_plan="等待调用方调整方案";
+labels.awaiting_help="执行已暂停 · 等待 Codex 帮助";
 Object.assign(labels,{stopped:"任务已停止",queued:"已排队",needs_replan:"需要调整方案"});
 labels.user_confirmed="你已确认 · 流程已结束";
 labels.review_paused="审核返修已暂停";
@@ -18,6 +19,20 @@ let currentActive=false,lastAutomaticRefresh=0;
 let loadedDraftGoal="";
 let loadedDraftId="",dismissedDraftId="",draftLoading=false,lastDraftCheck=0;
 function node(tag, text, cls) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (cls) el.className = cls; return el; }
+function renderWorkerSupport(data){
+  const host=$("worker-support"),question=data.help_request,stamp=question?question.revision+"|"+!!data.can_answer_help:"";
+  // Keep a user's in-progress answer stable across polling.
+  if(host.dataset.revision===stamp&&stamp)return;
+  host.dataset.revision=stamp;host.replaceChildren();host.hidden=!question&&!data.compaction_count;
+  if(data.compaction_count)host.append(node("p","执行端已整理上下文 "+data.compaction_count+" 次；原任务、方案、文件和累计用量保留。","hint"));
+  if(!question)return;
+  host.append(node("h2","执行模型需要当前 Codex 帮助"),node("p",question.question,"help-question"),node("p",question.checkpoint?.summary||""));
+  const details=node("details"),summary=node("summary","查看已做工作、下一步与证据");details.append(summary);
+  for(const [key,title] of [["completed","已做工作"],["next_steps","剩余工作"],["evidence","已有证据"]]){const values=question.checkpoint?.[key]||[];if(!values.length)continue;details.append(node("strong",title));const list=node("ul");for(const text of values)list.append(node("li",text));details.append(list);}host.append(details);
+  const actions=node("div",undefined,"help-actions"),copy=node("button","交给当前 Codex"),message=node("p","执行已暂停，不会继续消耗模型请求。Codex 正在 relay_wait 等待时会收到问题；否则点击按钮复制，再粘贴到当前对话发送。","hint");copy.type="button";
+  copy.addEventListener("click",async()=>{try{await navigator.clipboard.writeText(data.caller_help_request);message.textContent="求助已复制。粘贴到当前 Codex 对话发送；收到答复后原执行模型会继续。";}catch(error){message.textContent="复制失败，请复制下方求助文本。";const raw=node("textarea");raw.readOnly=true;raw.value=data.caller_help_request;host.append(raw);}});actions.append(copy);host.append(actions,message);
+  if(data.can_answer_help){const manual=node("details");manual.append(node("summary","也可直接填写建议并继续"));const answer=node("textarea"),send=node("button","发送建议并继续执行");answer.placeholder="写明建议、依据和下一步；发送后会继续调用原执行模型，可能计费。";send.type="button";send.addEventListener("click",async()=>{if(!answer.value.trim()){message.textContent="请先填写具体建议。";return;}send.disabled=true;try{await localPost("api/answer-help",{job_id:data.job_id,help_revision:question.revision,answer:answer.value});pendingJob=data.job_id;snapshotKey="";host.dataset.revision="";refresh(true);}catch(error){message.textContent=error.message;send.disabled=false;}});manual.append(answer,send);host.append(manual);}
+}
 function pretty(value) { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
 function badge(status) { return node("span", labels[status] || status || "—", "badge " + (["completed","accepted","user_confirmed"].includes(status)?"good":["running","ready"].includes(status)?"active":["failed","blocked","exhausted","awaiting_recovery"].includes(status)?"bad":"")); }
 function detail(title, text, key) {
@@ -115,7 +130,7 @@ async function copyReview(data){
     "任务："+data.request+"\njob_id："+data.job_id+"\n结果版本："+data.review_revision+"\n记录目录："+data.path+"\n"+
     "读取该目录 plan.json、result.json、state.json 中的 validation 和 changes.patch，必要时核对项目文件。区分接力连通、实际任务目标与未运行的测试，不将执行端自报等同测试通过。\n"+
     "逐条核对 residual 提醒：说明具体检查对象、验证方法、预期结果；已解决或与本次范围无关的条目，在 evidence 写出依据，并将其从 0 开始的索引加入 resolved_residual，未解决的不加入。\n"+
-    "若执行端没有可用浏览器而留下视觉验证提醒，请先检查本对话的浏览器集成；可用时打开实际产物验证构图、动画及提醒中的预期行为。不可用时保留未验证状态；不要自制替代渲染器或从 shell 启动浏览器。\n"+
+    "若执行端没有可用浏览器而留下视觉验证提醒，请先检查本对话的浏览器集成；可用时打开实际产物验证。其他核验方式遵守本对话的工具与环境规则，不把执行端沙箱的浏览器限制当作宿主的全局限制。无法核验时保留未验证状态，不要自制替代渲染器。\n"+
     "不通过时在 change_requests 逐项填写 path、location、problem、requested_change、verification（含预期结果）；回复类任务的 path/location 可留空，不编造行号或命令。\n"+
     "调用 relay_record_review，传入 job_id、result_revision（上述结果版本）、auto_correct:"+auto+" 与 review：status 为 approved / changes_requested / unable_to_verify；summary 为给用户的结论，evidence 为依据数组，issues 为可操作的问题数组，resolved_residual 为已核对关闭的提醒索引数组。\n"+
     (auto?"我允许审核不通过后让原执行模型按意见返修（可能产生模型费用）。工具返回 queued 后使用 relay_wait 等待，读取新的结果版本、回答、测试与差异，并继续由你复审，直到通过、受阻、证据不足或暂停；不能复用旧结果版本，也不能替执行模型声称测试通过。网页无法在对话结束后自行唤醒你。\n":"本次只审核，不启动返修。\n")+
@@ -194,7 +209,7 @@ function renderResult(data){
   const phase=data.phases.find(p=>p.id===found?.phase)||null;
   if(!result){
     const state=data.state;
-    host.append(node("p",state==="running"?"执行端仍在运行，尚未交付结果。":state==="ready"?"等待执行端交付结果。":"尚未记录执行端结果。","empty"));
+    host.append(node("p",state==="awaiting_help"?"执行已暂停，正在等待当前 Codex 的具体建议。":state==="running"?"执行端仍在运行，尚未交付结果。":state==="ready"?"等待执行端交付结果。":"尚未记录执行端结果。","empty"));
     if(data.phases.some(p=>p.role==="planner"&&p.response?.goal)){const plan=node("div",undefined,"result-line");plan.append(node("strong","规划目标："),node("span",data.phases.filter(p=>p.role==="planner").at(-1).response.goal));host.append(plan);}
     return;
   }
@@ -523,7 +538,7 @@ function render(data) {
   renderFailure(data.failure);
   if(data.failure)$("failure").prepend(node("div","所选任务记录 · "+(data.updated_at?new Date(data.updated_at*1000).toLocaleString():data.title),"hint"));
   $("task-state").replaceWith(Object.assign(badge(data.state),{id:"task-state"}));
-  renderResult(data);renderIssues(data);renderProgress(data);renderSubagents(data);renderCorrections(data);
+  renderWorkerSupport(data);renderResult(data);renderIssues(data);renderProgress(data);renderSubagents(data);renderCorrections(data);
   for(const role of ["planner","worker"])renderRole(role,data);
   renderHandoffs(data);
   $("checks").replaceChildren();for(const check of data.checks||[]){const box=node("div",undefined,"check");box.append(node("strong",check.id+" · "+(check.exit_code===0&&!check.failure?"通过":"未通过")),node("pre",[check.failure,check.stdout_tail,check.stderr_tail].filter(Boolean).join("\n")));$("checks").append(box);}
@@ -541,9 +556,9 @@ async function refresh(force=false){
   lastAutomaticRefresh=Date.now();
   try{
     if(launchEnabled&&!pendingJob&&Date.now()-lastDraftCheck>=1000)await loadDraft(true);
-    if(pendingJob){const job=await api("api/job/"+pendingJob);current=job.run_id;if(!job.active){$("launch-message").textContent=job.failure?(job.diagnostic?.message||"任务已停止，查看下方具体原因。"):job.status==="user_confirmed"?"你已确认，流程已结束。":"执行已结束。查看回答后，可自行确认结束，或交回原规划端审核。";pendingJob="";launchSignature="";launchKey="";repeatReady=true;listTick=0;launchMode();}else $("launch-message").textContent="任务已提交 · "+(labels[job.status]||job.status)+" · 正在读取交接记录…";}
+    if(pendingJob){const job=await api("api/job/"+pendingJob);current=job.run_id;if(!job.active){$("launch-message").textContent=job.failure?(job.diagnostic?.message||"任务已停止，查看下方具体原因。"):job.status==="awaiting_help"?"执行已暂停，等待当前 Codex 帮助，问题与交接入口见下方。":job.status==="user_confirmed"?"你已确认，流程已结束。":"执行已结束。查看回答后，可自行确认结束，或交回原规划端审核。";pendingJob="";launchSignature="";launchKey="";repeatReady=true;listTick=0;launchMode();}else $("launch-message").textContent="任务已提交 · "+(labels[job.status]||job.status)+" · 正在读取交接记录…";}
     if(force||pendingJob||!currentActive||++listTick%4===1){const {runs,last_deleted,last_deleted_ids}=await api("api/runs"),select=$("run"),listKey=JSON.stringify(runs);lastDeleted=last_deleted||"";lastDeletedIds=last_deleted_ids||(lastDeleted?[lastDeleted]:[]);$("undo-delete").hidden=!lastDeletedIds.length;$("undo-delete").textContent="撤销上次删除（"+lastDeletedIds.length+" 条）";if(listKey!==runsKey){select.replaceChildren();for(const r of runs){const option=node("option",(r.mode==="mock"?"[模拟] ":"")+(r.title||r.name)+" · "+(labels[r.status]||r.status));option.value=r.id;option.title=r.name;select.append(option);}renderHistoryChoices(runs);runsKey=listKey;}if(!runs.some(r=>r.id===current)){if(pendingJob){$("notice").textContent="任务已排队，等待本地进程启动…";return;}current=runs[0]?.id||"";snapshotKey="";}select.value=current;}
-    if(!current){currentActive=false;$("notice").textContent="还没有运行记录。填写上方任务，点击开始即可查看目标、结果和问题。";for(const id of ["planner","worker","handoffs","checks","issues","result"])$(id).replaceChildren();$("request").textContent="等待任务记录";$("project").textContent="";$("patch").textContent="";$("task-state").textContent="—";$("issue-count").textContent="0";$("issue-count").className="badge";$("progress").hidden=true;renderFailure(null);document.title="Stage Relay · 协作面板";return;}
+    if(!current){currentActive=false;$("notice").textContent="还没有运行记录。填写上方任务，点击开始即可查看目标、结果和问题。";for(const id of ["planner","worker","handoffs","checks","issues","result"])$(id).replaceChildren();$("request").textContent="等待任务记录";$("project").textContent="";$("patch").textContent="";$("task-state").textContent="—";$("issue-count").textContent="0";$("issue-count").className="badge";$("progress").hidden=true;$("worker-support").hidden=true;$("worker-support").dataset.revision="";renderFailure(null);document.title="Stage Relay · 协作面板";return;}
     const requested=current,data=await api("api/run/"+requested),key=JSON.stringify({...data,observed_at:0});
     if(requested!==current)return;
     currentActive=["queued","running","ready"].includes(data.state);
