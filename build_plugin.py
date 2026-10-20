@@ -15,7 +15,7 @@ def build(output):
     names = ["README.md", "CHANGELOG.md", ".gitignore", ".codex-plugin/plugin.json", "relay.py", "panel.py",
              "mcp_server.py", "configure_plugin.py", "build_plugin.py", "demo.py", "audit_ccswitch.py",
              "config.example.json", "config.ccswitch-native.example.json"]
-    for folder in ("relaylib", "panel", "skills", "tests", "assets"):
+    for folder in ("relaylib", "panel", "skills", "tests", "assets", "docs"):
         names.extend(p.relative_to(ROOT).as_posix() for p in (ROOT / folder).rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts and p.suffix in (".py", ".md", ".js", ".css", ".html", ".svg"))
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:

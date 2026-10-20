@@ -24,6 +24,7 @@ from relaylib import checks
 from relaylib import subagents
 from relaylib import corrections
 from relaylib import assistance
+from relaylib import skill_catalog
 
 ROOT = Path(__file__).resolve().parent
 PHASE = re.compile(r"\d{3,6}-(planner|worker|reviewer)")
@@ -321,6 +322,7 @@ class Store:
             failure = describe_failure(RelayError(service["error"], ""), logs=[directory.parent / "service.stderr.log"])
         accepted = {a.get("directory") for a in state.get("attempts", []) if isinstance(a, dict)}
         pending = state.get("pending") or {}
+        catalog = json_file(directory, "worker-skills.json") if state.get("skill_policy", {}).get("enabled") else {}
         phases, handoffs = [], []
         paths = sorted(p for p in (directory.iterdir() if directory.is_dir() else []) if PHASE.fullmatch(p.name) and p.is_dir()
                        and p.resolve().is_relative_to(directory))[-MAX_PHASES:]
@@ -338,6 +340,7 @@ class Store:
             # state=running can survive a crash; this is checkpoint state, not
             # a claim that a process or an API request is currently alive.
             phases.append({"id": path.name, "role": role, "status": status, "model": finish.get("model"),
+                           "skill_reads": finish.get("skill_reads", []) if finish else skill_catalog.read_evidence(path / "events.jsonl", catalog, recent_bytes=256_000),
                            "subagents": finish.get("subagents") or subagents.lifecycle(path / "events.jsonl", config.get("worker", {}).get("model")),
                            "routed_usage": finish.get("routed_usage") or subagents.routed_usage(directory / "requests.jsonl", path.name),
                            "events": events, "usage": usage, "input": prompt,
@@ -401,6 +404,8 @@ class Store:
                                         + f"\n若求助工具未加载，读取 {ROOT / '.mcp.json'} 的本机启动参数，使用同一 mcp_server.py 的 --answer-help <JSON文件> 写回答复。"
                                         if job and state.get("status") == "awaiting_help" and state.get("help_request") else None),
                 "compaction_count": state.get("compaction_count", 0),
+                "skill_catalog": catalog,
+                "skill_policy": state.get("skill_policy"),
                 "context_events": state.get("context_events", []),
                 "confirmation": confirmation, "can_confirm": can_confirm,
                 "review": review, "review_revision": review_revision(directory, state) if state.get("last_result") else None,

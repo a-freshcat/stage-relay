@@ -18,6 +18,7 @@ from .review import read_review, read_confirmation, revision as review_revision,
 from . import corrections
 from . import subagents
 from . import assistance
+from . import skill_catalog
 from .runtime import (FileLock, atomic_json, bounded_read, git, project_snapshot,
                       require_clean_project, run_process)
 
@@ -46,8 +47,10 @@ def read_config(path):
         fail("config_error", "codex_command must be an argv array")
     for role in ("planner", "worker"):
         item = config.get(role, {})
-        if not isinstance(item, dict) or set(item) - {"model", "endpoint", "timeout_seconds", "max_requests", "persist", "max_output_tokens"}:
+        if not isinstance(item, dict) or set(item) - {"model", "endpoint", "timeout_seconds", "max_requests", "persist", "max_output_tokens", "skill_reuse"}:
             fail("config_error", f"Unknown {role} setting")
+        if item.get("skill_reuse", "auto") not in ("auto", "off", "non_gpt") or role != "worker" and "skill_reuse" in item:
+            fail("config_error", "worker.skill_reuse must be auto, off or non_gpt")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,199}", item.get("model", "")):
             fail("config_error", f"{role}.model must be an explicit model identifier")
         if role == "planner" and item.get("persist", "handoff_only") != "handoff_only":
@@ -427,6 +430,11 @@ class Runner:
                                        manual_completed=self.state.get("manual_delegation_completed", False))
         if role == "worker":
             base += assistance.prompt(self.state, ROOT / "skills/relay-context/SKILL.md")
+            self.state["skill_policy"] = skill_catalog.policy(self.config["worker"])
+            if self.state["skill_policy"]["enabled"]:
+                catalog = skill_catalog.prepare(self.project, self.run_dir, request,
+                                               load_json(self.run_dir / "plan.json") if (self.run_dir / "plan.json").exists() else {})
+                base += skill_catalog.prompt(catalog, self.run_dir / "worker-skills.json")
         recovery = self.state.get("recovery")
         if recovery and recovery.get("role") == role:
             base += ("RECOVERY FROM PARTIAL WORK: Files from the interrupted stage were preserved. "
@@ -577,6 +585,9 @@ class Runner:
                                 elapsed_seconds=result["elapsed_seconds"])
         result["usage"] = parse_events(directory / "events.jsonl")
         result["format_repair"] = repair_from is not None
+        if role == "worker" and repair_from is None and self.state.get("skill_policy", {}).get("enabled"):
+            result["skill_reads"] = skill_catalog.read_evidence(directory / "events.jsonl",
+                                                               load_json(self.run_dir / "worker-skills.json"))
         result["model"] = spec["model"]
         result["subagents"] = subagents.lifecycle(directory / "events.jsonl", spec["model"])
         result["routed_usage"] = subagents.routed_usage(self.run_dir / "requests.jsonl", name)

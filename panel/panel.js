@@ -530,6 +530,22 @@ function delegationSelection(){
 $("subagents-concurrency").disabled=true;
 $("subagents-mode").addEventListener("change",()=>{$("subagents-concurrency").disabled=$("subagents-mode").value==="off";$("subagents-manual").hidden=$("subagents-mode").value!=="manual";if(!$("subagents-manual").hidden&&!$("subagents-tasks").children.length)addDelegationTask();});
 $("subagents-add").addEventListener("click",addDelegationTask);
+function renderSkills(data){
+  const catalog=data.skill_catalog,entries=catalog?.entries||[],host=$("worker-skills-content");
+  $("worker-skills").hidden=(!catalog||!Object.keys(catalog).length)&&!data.skill_policy;host.replaceChildren();
+  if($("worker-skills").hidden)return;
+  if(data.skill_policy&&!data.skill_policy.enabled){$("worker-skills-summary").textContent="执行技能 · "+(data.skill_policy.reason==="native"?"沿用原生技能":"未添加推荐目录");host.append(node("p",data.skill_policy.message,"hint"));return;}
+  const reads=new Map((data.phases||[]).filter(p=>p.role==="worker").flatMap(p=>p.skill_reads||[]).map(r=>[r.id,r]));
+  $("worker-skills-summary").textContent="执行技能 · 发现 "+entries.length+" 项 · 推荐 "+(catalog.recommended||[]).length+" 项 · 日志确认读取 "+reads.size+" 项";
+  host.append(node("p","按任务推荐技能，只在需要时读取说明。推荐不代表已经使用；读取记录也不能证明全部步骤已完成。运行中只展示最近日志里的读取证据。","hint"));
+  for(const row of reads.values())host.append(node("p","已读取说明："+row.name+" · "+row.path,"skill-read"));
+  if(!reads.size)host.append(node("p","暂无可确认的技能读取记录；不代表执行端没有使用其他方式读取。","hint"));
+  const addRow=(target,row)=>{const card=node("div",undefined,"skill-row");card.append(node("strong",row.id),node("p",row.description),node("small",row.path));for(const hint of row.hints||[])card.append(node("p",hint,"skill-hint"));target.append(card);};
+  for(const row of entries.filter(r=>(catalog.recommended||[]).includes(r.id)))addRow(host,row);
+  const all=node("details");all.dataset.key="worker-skills-all";all.append(node("summary","查看全部发现的技能（"+entries.length+"）"));for(const row of entries)addRow(all,row);host.append(all);
+  for(const warning of catalog.warnings||[])host.append(node("p",warning,"skill-hint"));
+  host.append(node("p",catalog.note||"工具和脚本依赖尚未验证；缺少必要能力时可向当前 Codex 求助。","hint"));
+}
 function render(data) {
   const open=new Set([...document.querySelectorAll("details[open]")].map(d=>d.dataset.key).filter(Boolean));
   $("request").textContent=data.request||"尚未记录任务";$("project").textContent=data.project||"";
@@ -538,7 +554,7 @@ function render(data) {
   renderFailure(data.failure);
   if(data.failure)$("failure").prepend(node("div","所选任务记录 · "+(data.updated_at?new Date(data.updated_at*1000).toLocaleString():data.title),"hint"));
   $("task-state").replaceWith(Object.assign(badge(data.state),{id:"task-state"}));
-  renderWorkerSupport(data);renderResult(data);renderIssues(data);renderProgress(data);renderSubagents(data);renderCorrections(data);
+  renderWorkerSupport(data);renderSkills(data);renderResult(data);renderIssues(data);renderProgress(data);renderSubagents(data);renderCorrections(data);
   for(const role of ["planner","worker"])renderRole(role,data);
   renderHandoffs(data);
   $("checks").replaceChildren();for(const check of data.checks||[]){const box=node("div",undefined,"check");box.append(node("strong",check.id+" · "+(check.exit_code===0&&!check.failure?"通过":"未通过")),node("pre",[check.failure,check.stdout_tail,check.stderr_tail].filter(Boolean).join("\n")));$("checks").append(box);}
@@ -558,7 +574,7 @@ async function refresh(force=false){
     if(launchEnabled&&!pendingJob&&Date.now()-lastDraftCheck>=1000)await loadDraft(true);
     if(pendingJob){const job=await api("api/job/"+pendingJob);current=job.run_id;if(!job.active){$("launch-message").textContent=job.failure?(job.diagnostic?.message||"任务已停止，查看下方具体原因。"):job.status==="awaiting_help"?"执行已暂停，等待当前 Codex 帮助，问题与交接入口见下方。":job.status==="user_confirmed"?"你已确认，流程已结束。":"执行已结束。查看回答后，可自行确认结束，或交回原规划端审核。";pendingJob="";launchSignature="";launchKey="";repeatReady=true;listTick=0;launchMode();}else $("launch-message").textContent="任务已提交 · "+(labels[job.status]||job.status)+" · 正在读取交接记录…";}
     if(force||pendingJob||!currentActive||++listTick%4===1){const {runs,last_deleted,last_deleted_ids}=await api("api/runs"),select=$("run"),listKey=JSON.stringify(runs);lastDeleted=last_deleted||"";lastDeletedIds=last_deleted_ids||(lastDeleted?[lastDeleted]:[]);$("undo-delete").hidden=!lastDeletedIds.length;$("undo-delete").textContent="撤销上次删除（"+lastDeletedIds.length+" 条）";if(listKey!==runsKey){select.replaceChildren();for(const r of runs){const option=node("option",(r.mode==="mock"?"[模拟] ":"")+(r.title||r.name)+" · "+(labels[r.status]||r.status));option.value=r.id;option.title=r.name;select.append(option);}renderHistoryChoices(runs);runsKey=listKey;}if(!runs.some(r=>r.id===current)){if(pendingJob){$("notice").textContent="任务已排队，等待本地进程启动…";return;}current=runs[0]?.id||"";snapshotKey="";}select.value=current;}
-    if(!current){currentActive=false;$("notice").textContent="还没有运行记录。填写上方任务，点击开始即可查看目标、结果和问题。";for(const id of ["planner","worker","handoffs","checks","issues","result"])$(id).replaceChildren();$("request").textContent="等待任务记录";$("project").textContent="";$("patch").textContent="";$("task-state").textContent="—";$("issue-count").textContent="0";$("issue-count").className="badge";$("progress").hidden=true;$("worker-support").hidden=true;$("worker-support").dataset.revision="";renderFailure(null);document.title="Stage Relay · 协作面板";return;}
+    if(!current){currentActive=false;$("notice").textContent="还没有运行记录。填写上方任务，点击开始即可查看目标、结果和问题。";for(const id of ["planner","worker","handoffs","checks","issues","result"])$(id).replaceChildren();$("request").textContent="等待任务记录";$("project").textContent="";$("patch").textContent="";$("task-state").textContent="—";$("issue-count").textContent="0";$("issue-count").className="badge";$("progress").hidden=true;$("worker-skills").hidden=true;$("worker-support").hidden=true;$("worker-support").dataset.revision="";renderFailure(null);document.title="Stage Relay · 协作面板";return;}
     const requested=current,data=await api("api/run/"+requested),key=JSON.stringify({...data,observed_at:0});
     if(requested!==current)return;
     currentActive=["queued","running","ready"].includes(data.state);

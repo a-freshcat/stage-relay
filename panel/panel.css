@@ -240,3 +240,8 @@ summary{font-weight:600;color:#365575;font-size:12px}
 .worker-support .help-question { font-size: 18px; font-weight: 700; line-height: 1.6; white-space: pre-wrap; }
 .worker-support textarea { display: block; width: 100%; min-height: 100px; margin: 10px 0; }
 .worker-support .help-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+/* Skill recommendations and observed reads have different labels and colors. */
+.worker-skills{margin:16px 0;padding:14px 18px;border:1px solid #b5a3da;border-left:5px solid #7653ac;background:#f9f6ff;border-radius:8px}
+.worker-skills>summary{font-weight:700;color:#533384;cursor:pointer}
+.skill-row{margin:10px 0;padding:10px 12px;background:#fff;border:1px solid #ddd4ed;border-radius:6px;overflow-wrap:anywhere}
+.skill-row p{margin:5px 0}.skill-row small{color:#55657a}.skill-hint{color:#946400;font-size:13px}.skill-read{color:#126347;font-weight:600;overflow-wrap:anywhere}

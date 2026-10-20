@@ -1,6 +1,6 @@
 {
   "name": "stage-relay",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Open a local collaboration GUI, run planner-to-worker tasks, or reuse caller plans with visible handoffs.",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
