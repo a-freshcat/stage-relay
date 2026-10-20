@@ -69,7 +69,7 @@ class RequestGrowthTests(unittest.TestCase):
                 with self.assertRaises(RelayError):
                     read_config(path)
 
-    def test_visual_fallback_is_handoff_without_building_replacement_renderer(self):
+    def test_visual_qa_is_optional_and_safe_without_blocking_delivery(self):
         with fixtures.WorkspaceTemp() as temp:
             root = Path(temp)
             config = json.loads((ROOT / "config.example.json").read_text())
@@ -78,11 +78,18 @@ class RequestGrowthTests(unittest.TestCase):
             (runner.run_dir / "request.md").write_text("制作 SVG", encoding="utf-8")
             runner.state = {"plan_source": "caller"}
             prompt = runner._prompt("worker")
-            self.assertIn("Do not build a replacement renderer", prompt)
-            self.assertIn("residual", prompt)
-            self.assertIn("caller", prompt)
-            self.assertIn("before promising", prompt)
-
+            for requirement in (
+                "Visual inspection is optional support, not a delivery gate",
+                "shell-launched browser is allowed when practical",
+                "unique writable temporary user-data directory",
+                "full stdout/stderr log files",
+                "Never use --headless=old, --single-process, or --no-zygote",
+                "return status completed with a concise residual note",
+                "never use needs_replan or block solely for missing visual QA",
+                "Do not build custom renderers",
+                "Never claim visual verification without actually inspecting",
+            ):
+                self.assertIn(requirement, prompt)
     def test_relay_accepts_grown_request_and_preserves_worker_result(self):
         fixture = fixtures.RelayIntegrationTests()
         fixture.setUp()
