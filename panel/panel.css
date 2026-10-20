@@ -234,3 +234,9 @@ summary{font-weight:600;color:#365575;font-size:12px}
 .review-change{margin:10px 0;padding:10px 12px;border-left:4px solid #bd4141;background:#fff5f4;overflow-wrap:anywhere}
 .review-change p{margin:6px 0}
 #correction-actions{display:flex;flex-wrap:wrap;gap:10px}
+:root { --relay-assistance: #734b19; }
+.worker-support { margin: 18px 0; padding: 20px; border: 2px solid #c58b23; border-left-width: 7px; border-radius: 10px; background: #fff8e9; }
+.worker-support h2 { color: #734b19; margin-top: 0; }
+.worker-support .help-question { font-size: 18px; font-weight: 700; line-height: 1.6; white-space: pre-wrap; }
+.worker-support textarea { display: block; width: 100%; min-height: 100px; margin: 10px 0; }
+.worker-support .help-actions { display: flex; gap: 10px; flex-wrap: wrap; }

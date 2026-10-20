@@ -296,7 +296,7 @@ class PluginTests(unittest.TestCase):
         replies = [json.loads(line) for line in process.stdout.splitlines()]
         self.assertEqual(len(replies), 4)
         self.assertEqual({t["name"] for t in replies[1]["result"]["tools"]},
-                         {"relay_open_panel", "relay_prepare", "relay_submit", "relay_wait", "relay_resume", "relay_record_review", "relay_correct", "relay_pause_corrections"})
+                         {"relay_open_panel", "relay_prepare", "relay_submit", "relay_wait", "relay_resume", "relay_record_review", "relay_correct", "relay_pause_corrections", "relay_pending_help", "relay_answer_help"})
         done = json.loads(replies[-1]["result"]["content"][0]["text"])
         self.assertEqual(done["status"], "completed", done)
         self.assertEqual(len(self.f.upstream.requests), 1)

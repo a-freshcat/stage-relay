@@ -23,6 +23,7 @@ from relaylib.diagnostics import describe_failure
 from relaylib import checks
 from relaylib import subagents
 from relaylib import corrections
+from relaylib import assistance
 
 ROOT = Path(__file__).resolve().parent
 PHASE = re.compile(r"\d{3,6}-(planner|worker|reviewer)")
@@ -39,6 +40,7 @@ ERROR_HELP = {
     "unsafe_path": "运行记录不能放在目标项目仓库内，请选择一个独立的项目目录。",
     "busy": "任务仍在排队或运行，请等待进程结束后再确认、审核或管理记录。",
     "review_stale": "执行结果已变化，请刷新后核对最新回答再操作。",
+    "help_stale": "这条求助已经变化或已答复，请读取当前问题后再回复。",
     "run_missing": "这条任务记录已不存在，请刷新列表。",
 }
 
@@ -393,6 +395,13 @@ class Store:
                            state.get("status") in ("completed", "needs_manual_verification", "exhausted", "review_paused") and
                            (state.get("last_result") or {}).get("status") == "completed")
         return {"id": identity, "job_id": directory.parent.name if job else None,
+                "help_request": state.get("help_request") if state.get("status") == "awaiting_help" else None,
+                "can_answer_help": bool(job and not active and state.get("status") == "awaiting_help"),
+                "caller_help_request": (assistance.caller_request(directory.parent.name, state["help_request"], state["project"])
+                                        + f"\n若求助工具未加载，读取 {ROOT / '.mcp.json'} 的本机启动参数，使用同一 mcp_server.py 的 --answer-help <JSON文件> 写回答复。"
+                                        if job and state.get("status") == "awaiting_help" and state.get("help_request") else None),
+                "compaction_count": state.get("compaction_count", 0),
+                "context_events": state.get("context_events", []),
                 "confirmation": confirmation, "can_confirm": can_confirm,
                 "review": review, "review_revision": review_revision(directory, state) if state.get("last_result") else None,
                 "plan_source": state.get("plan_source", "api"), "review_required": state.get("review_required", False),
@@ -524,11 +533,11 @@ def make_server(store, port=0, settings=None, jobs=None):
                 return
             route = urlsplit(self.path).path
             if route not in tuple(prefix + name for name in ("/api/settings", "/api/jobs", "/api/models", "/api/history",
-                                                             "/api/worker-models", "/api/worker", "/api/check", "/api/confirm", "/api/review", "/api/correct", "/api/pause-corrections")):
+                                                             "/api/worker-models", "/api/worker", "/api/check", "/api/confirm", "/api/review", "/api/correct", "/api/pause-corrections", "/api/answer-help")):
                 reject(404, "Not found")
                 return
             raw_length = self.headers.get("Content-Length", "")
-            maximum = 2_000_000 if route.endswith(("/jobs", "/history")) else 32_000
+            maximum = 2_000_000 if route.endswith(("/jobs", "/history", "/answer-help")) else 32_000
             if (not raw_length.isascii() or not raw_length.isdigit() or len(raw_length) > 7 or not 0 < int(raw_length) <= maximum or
                     self.headers.get("Transfer-Encoding") or
                     self.headers.get("Content-Type", "").split(";")[0] != "application/json"):
@@ -537,7 +546,16 @@ def make_server(store, port=0, settings=None, jobs=None):
             self.connection.settimeout(5)
             try:
                 value = json.loads(self.rfile.read(int(raw_length)))
-                if route.endswith("/pause-corrections"):
+                if route.endswith("/answer-help"):
+                    if jobs is None:
+                        raise SettingsError("当前入口仅供查看。", 403)
+                    validate(value, {"type": "object", "properties": {
+                        "job_id": {"type": "string", "pattern": "[a-f0-9]{24}"},
+                        "help_revision": {"type": "string", "pattern": "[a-f0-9]{64}"},
+                        "answer": {"type": "string", "minLength": 1, "maxLength": 100000}},
+                        "required": ["job_id", "help_revision", "answer"], "additionalProperties": False})
+                    result = jobs.answer_help(**value)
+                elif route.endswith("/pause-corrections"):
                     if jobs is None:
                         raise SettingsError("当前入口仅供查看。", 403)
                     validate(value, {"type": "object", "properties": {"job_id": {"type": "string", "pattern": "[a-f0-9]{24}"}}, "required": ["job_id"], "additionalProperties": False})

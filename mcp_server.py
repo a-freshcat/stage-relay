@@ -76,6 +76,10 @@ def serve(store, reader, writer):
                             value = store.correct_result(**args)
                         elif name == "relay_pause_corrections":
                             value = store.pause_corrections(**args)
+                        elif name == "relay_pending_help":
+                            value = store.pending_help(**args)
+                        elif name == "relay_answer_help":
+                            value = store.answer_help(**args)
                         else:
                             value = store.resume(**args)
                         # One compact text representation; avoid duplicating it in structuredContent.
@@ -103,6 +107,8 @@ def main():
     parser.add_argument("--prepare-plan", help="UTF-8 JSON file with project and plan; save a caller draft without model calls")
     parser.add_argument("--open-task", help="UTF-8 JSON with user_request and optional project; show the new task before planning")
     parser.add_argument("--record-review", help="UTF-8 JSON with job_id, result_revision and the caller-planner's review")
+    parser.add_argument("--pending-help", action="store_true", help="Read pending worker questions without calling models")
+    parser.add_argument("--answer-help", help="UTF-8 JSON with job_id, help_revision and answer; resume the original worker")
     parser.add_argument("--wait-job", help="Read/wait for a job using this installed version; no model call")
     parser.add_argument("--seconds", type=int, default=50, help="Local wait duration, 0..50 seconds")
     parser.add_argument("--full-result", action="store_true", help="Include complete saved execution and correction evidence")
@@ -116,6 +122,15 @@ def main():
     if not args.config or not args.projects_root:
         parser.error("--config and --projects-root are required; run configure_plugin.py first")
     store = JobStore(args.config, args.runs_root, args.projects_root)
+    if args.pending_help:
+        print(json.dumps(store.pending_help(), ensure_ascii=False))
+        return
+    if args.answer_help:
+        from relaylib.contracts import load_json
+        value = load_json(args.answer_help, MAX_MESSAGE)
+        validate(value, next(t["inputSchema"] for t in TOOLS if t["name"] == "relay_answer_help"))
+        print(json.dumps(store.answer_help(**value), ensure_ascii=False))
+        return
     if args.open_task:
         from relaylib.contracts import load_json
         value = load_json(args.open_task, MAX_MESSAGE)

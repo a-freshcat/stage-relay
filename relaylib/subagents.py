@@ -80,7 +80,7 @@ def cli_options(value, model, enabled=True):
     return options
 
 
-def instructions(value):
+def instructions(value, manual_completed=False):
     value = policy(value)
     if value["mode"] == "off":
         return "Do not spawn subagents.\n"
@@ -99,7 +99,11 @@ def instructions(value):
     if value["mode"] == "auto":
         text += "AUTO: decide whether delegation will help; small or dependent tasks should stay local.\n"
     else:
-        text += "MANUAL: use exactly these delegated assignments; keep their write sets disjoint.\n" + json.dumps(value["tasks"], ensure_ascii=False) + "\n"
+        text += ("MANUAL: the previous checkpoint already finished and closed these assignments. "
+                 "Reuse their reported evidence; do not respawn them just to satisfy a count. "
+                 "Only delegate necessary remaining work within the same assignments.\n" if manual_completed else
+                 "MANUAL: use exactly these delegated assignments; keep their write sets disjoint.\n")
+        text += json.dumps(value["tasks"], ensure_ascii=False) + "\n"
     return text
 
 
