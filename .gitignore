@@ -38,3 +38,4 @@ release/
 
 # Local backups of real project databases and reviewer evidence: never published.
 archive/
+qa/context-poll-*.json

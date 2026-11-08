@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from . import __version__
+from . import __version__, rules
 
 
 def schema(properties=None, required=None):
@@ -21,9 +21,17 @@ def schema(properties=None, required=None):
 
 
 STR = {"type": "string"}
+INT = {"type": "integer", "minimum": 1}
 PROJECT = {"project_id": STR}
 TOOLS = [
-    {"name": "relay_inbox", "description": "读取分配给当前成员的任务、协作消息与用户决定。先读取再行动；paused 时停止推进。保留 cursor 供下一次 after 使用。", "inputSchema": schema({"after": {"type": "integer", "minimum": 0}})},
+    {"name": "relay_inbox", "description": "读取分配给当前成员的任务与协作事件。默认只返回项目概要、事件摘要与游标；完整证据、群聊与议题历史用 relay_project / relay_task / relay_issue / relay_message / relay_event 按需读取。重读全部历史传 full=true。保留 cursor 供下一次 after 使用。", "inputSchema": schema({"after": {"type": "integer", "minimum": 0}, "full": {"type": "boolean"}})},
+    {"name": "relay_rules", "description": "读取固定协作规则原文。会话新建、换绑、上下文压缩或宿主重建后调用一次即可恢复身份与权限约束；不占用每次唤醒。", "inputSchema": schema()},
+    {"name": "relay_project", "description": "按需读取一个项目的完整记录：全部板块与证据、议题全部消息、项目群聊全文、决定历史。", "inputSchema": schema(PROJECT, ["project_id"])},
+    {"name": "relay_task", "description": "按需读取一个工作板块的完整记录，含执行依据、核验依据与历史核验参考。", "inputSchema": schema(PROJECT | {"task_id": STR}, ["project_id", "task_id"])},
+    {"name": "relay_issue", "description": "按需读取一个议题的完整记录，含全部消息、附件与决定。", "inputSchema": schema(PROJECT | {"issue_id": STR}, ["project_id", "issue_id"])},
+    {"name": "relay_message", "description": "按需读取单条消息原文（项目群聊或议题消息）；给出 issue_id 时只在该议题内查找。", "inputSchema": schema(PROJECT | {"message_id": STR, "issue_id": STR}, ["project_id", "message_id"])},
+    {"name": "relay_list", "description": "分页读取一个项目的完整条目（tasks / issues / chat / messages / events），逐条为全文并返回 total 与 next_offset；取单条时用 relay_task / relay_issue / relay_message 更省。", "inputSchema": schema(PROJECT | {"kind": {"enum": ["tasks", "issues", "chat", "messages", "events"]}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}, "issue_id": STR}, ["project_id", "kind"])},
+    {"name": "relay_event", "description": "按需读取一条协作事件的完整原文（按 seq）。", "inputSchema": schema(PROJECT | {"seq": INT}, ["project_id", "seq"])},
     {"name": "relay_report", "description": "汇报自己负责且已派发的板块进展。review 表示待核验，必须提供文件改动、命令和实际检查结果。不能自行标记验收通过。", "inputSchema": schema(PROJECT | {"task_id": STR, "status": {"enum": ["running", "review"]}, "evidence": STR}, ["project_id", "task_id", "status", "evidence"])},
     {"name": "relay_raise_issue", "description": "遇到阻碍、分歧或新提案时建立议题并邀请相关成员。列出 task_ids 只暂停受影响板块；需用户决定时提供至少两个带影响说明的选项。", "inputSchema": schema(PROJECT | {"title": STR, "body": STR, "members": {"type": "array", "items": STR}, "task_ids": {"type": "array", "items": STR}, "options": {"type": "array", "maxItems": 4, "items": schema({"title": STR, "detail": STR}, ["title", "detail"])}}, ["project_id", "title", "body"])},
     {"name": "relay_send_message", "description": "向自己参加的议题群聊发送消息，其他成员可从信箱读取。发消息不等于对方已读或已运行。不要代替用户作决定。", "inputSchema": schema(PROJECT | {"issue_id": STR, "body": STR}, ["project_id", "issue_id", "body"])},
@@ -31,9 +39,15 @@ TOOLS = [
     {"name": "relay_review", "description": "方案监督负责人核验其他成员的待审核板块。提供独立检查依据；不能核验自己的执行结果。分工切换后须从最新项目读取 review_epoch 并随请求提交。", "inputSchema": schema(PROJECT | {"task_id": STR, "approved": {"type": "boolean"}, "evidence": STR, "review_epoch": {"type":"integer","minimum":0}}, ["project_id", "task_id", "approved", "evidence"])},
     {"name": "relay_submit_summary", "description": "当前汇总负责人在用户派发汇总、所有板块核验通过且议题解决后，提交有依据的最终说明。", "inputSchema": schema(PROJECT | {"body": STR}, ["project_id", "body"])},
 ]
+READ_ONLY = {"relay_inbox", "relay_rules", "relay_project", "relay_task", "relay_issue", "relay_message", "relay_event", "relay_list"}
 for tool in TOOLS:
-    tool['annotations']={'readOnlyHint':tool['name']=='relay_inbox','destructiveHint':False,'openWorldHint':False}
+    tool['annotations']={'readOnlyHint':tool['name'] in READ_ONLY,'destructiveHint':False,'openWorldHint':False}
 ACTIONS = {"relay_report": "report", "relay_raise_issue": "issue_create", "relay_send_message": "message", "relay_project_message": "project_message", "relay_review": "review", "relay_submit_summary": "summary_submit"}
+# Read-only tools map to their own bridge actions; none of them writes state
+# except recording the member's last-seen timestamp, as relay_inbox already did.
+READS = {"relay_rules": "rules", "relay_project": "read_project", "relay_task": "read_task",
+         "relay_issue": "read_issue", "relay_message": "read_message", "relay_event": "read_event",
+         "relay_list": "read_list"}
 
 
 class Bridge:
@@ -101,7 +115,14 @@ class Bridge:
                 spec = tool["inputSchema"]
                 if set(arguments) - set(spec["properties"]) or set(spec["required"]) - set(arguments):
                     raise ValueError("参数缺失或包含未支持字段。")
-                result = self.request("inbox" if name == "relay_inbox" else ACTIONS[name], arguments)
+                if name == "relay_rules":
+                    result = {"version": rules.VERSION, "text": rules.full(self.agent)}
+                elif name == "relay_inbox":
+                    result = self.request("inbox", arguments)
+                elif name in READS:
+                    result = self.request(READS[name], arguments)
+                else:
+                    result = self.request(ACTIONS[name], arguments)
                 response["result"] = {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}], "isError": False}
             except (ValueError, OSError, KeyError) as exc:
                 response["result"] = {"content": [{"type": "text", "text": str(exc)}], "isError": True}

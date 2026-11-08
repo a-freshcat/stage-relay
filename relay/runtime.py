@@ -2,6 +2,7 @@
 
 import json
 import time
+from . import brief, rules
 from .domain import Invalid, now, uid
 
 
@@ -20,7 +21,19 @@ class Runtime:
             # Switching a member to another native session is a visible, counted
             # event: queued work is revoked and the new generation starts clean.
             db.execute('CREATE TABLE IF NOT EXISTS native_binding_meta(project TEXT, agent TEXT, generation INTEGER NOT NULL, updated REAL NOT NULL, PRIMARY KEY(project,agent))')
+            # Incremental scan cursor: polling reads only events this member has
+            # never evaluated, instead of rescanning the whole project history.
+            db.execute('CREATE TABLE IF NOT EXISTS native_cursors(project TEXT, agent TEXT, seq INTEGER NOT NULL, PRIMARY KEY(project,agent))')
+            # An event the discussion bound only *postpones* lives here, keyed by
+            # its seq. It is retried on every poll and delivered as soon as the
+            # bound lifts, without holding back later events for other issues.
+            db.execute('CREATE TABLE IF NOT EXISTS native_deferred(project TEXT, agent TEXT, seq INTEGER NOT NULL, reason TEXT, since REAL NOT NULL, PRIMARY KEY(project,agent,seq))')
+            # Rules recovery: the full collaboration rules are injected once per
+            # binding generation (and again after a session goes quiet or comes
+            # back from a gap), never on every wake.
+            db.execute('CREATE TABLE IF NOT EXISTS native_rules(agent TEXT, session TEXT, generation INTEGER NOT NULL, full_sent INTEGER NOT NULL, full_confirmed INTEGER NOT NULL, compact INTEGER NOT NULL, PRIMARY KEY(agent,session))')
         self.reconcile()
+        self.migrate_queued()
 
     def snapshot(self):
         with self.store.connect() as db:
@@ -45,6 +58,36 @@ class Runtime:
             if native.get('id') == session:
                 return native.get('status')
         return None
+
+    @staticmethod
+    def _decide_rules(db, agent, session, generation):
+        """Return the rules block to inject, or '' when the session already has it.
+
+        The full text goes out on the first wake of a binding generation, again
+        if that first delivery was never confirmed after a short grace, and again
+        after a long quiet gap (the native session may have been rebuilt or
+        compacted without telling us). Every other wake carries only the digest,
+        and `relay_rules` can always return the identical full text on demand.
+        """
+        row = db.execute('SELECT generation,full_sent,full_confirmed FROM native_rules WHERE agent=? AND session=?', (agent, session)).fetchone()
+        now_ts = time.time()
+        if not row or row[0] != generation:
+            db.execute('INSERT INTO native_rules VALUES(?,?,?,?,?,?) ON CONFLICT(agent,session) DO UPDATE SET generation=excluded.generation,full_sent=excluded.full_sent,full_confirmed=0',
+                       (agent, session, generation, now_ts, 0, 0))
+            return rules.full(agent)
+        _, full_sent, confirmed = row
+        if not confirmed and now_ts - full_sent > 60:
+            db.execute('UPDATE native_rules SET full_sent=? WHERE agent=? AND session=?', (now_ts, agent, session))
+            return rules.full(agent)
+        if now_ts - full_sent > 3600:
+            db.execute('UPDATE native_rules SET full_sent=? WHERE agent=? AND session=?', (now_ts, agent, session))
+            return rules.full(agent)
+        return ''
+
+    @staticmethod
+    def _confirm_rules(db, agent, session):
+        if db.execute('SELECT 1 FROM native_rules WHERE agent=? AND session=?', (agent, session)).fetchone():
+            db.execute('UPDATE native_rules SET full_confirmed=1,compact=compact+1 WHERE agent=? AND session=?', (agent, session))
 
     def bind(self, project_id, agent_id, session_id):
         state=self.store.snapshot()
@@ -165,6 +208,129 @@ class Runtime:
             db.execute("UPDATE native_jobs SET status='delivered',body=?,updated=? WHERE id=?",(json.dumps(detail),time.time(),payload['id']))
         return {'session':session}
 
+    @staticmethod
+    def _rebuild_merge_tail(db, body, merged_seqs):
+        """Rebuild a job's prompt from its base plus the current merged id list.
+
+        Rebuilding (rather than appending) is what makes a merge idempotent and
+        what lets a recycled member be dropped without leaving its text behind.
+        """
+        base = body.get('prompt_base')
+        if base is None:
+            base = body.get('prompt', '')
+            cut = base.find('\n\n同一会话还有 ')
+            if cut != -1:
+                base = base[:cut]
+            body['prompt_base'] = base
+        lines = []
+        for seq in merged_seqs:
+            found = db.execute('SELECT kind,actor,body FROM events WHERE seq=?', (seq,)).fetchone()
+            if not found:
+                continue
+            lines.append(json.dumps({'seq': seq, 'kind': found[0], 'actor': found[1],
+                                     'detail': brief.trimmed(json.loads(found[2]))}, ensure_ascii=False))
+        if not lines:
+            body['merged_events'] = []
+            body['prompt'] = base
+            return
+        body['merged_events'] = [seq for seq in merged_seqs]
+        shown = lines[:brief.MERGE_LINES]
+        rest = merged_seqs[len(shown):]
+        tail = (f'\n……另有 {len(rest)} 条已并入本次唤醒（seq {rest[0]}…{rest[-1]}），'
+                '不要遗漏，用 relay_event 按 seq 读取全文。') if rest else ''
+        body['prompt'] = (base + '\n\n同一会话还有 ' + str(len(lines)) +
+                          ' 条待处理事件合并到本次唤醒，逐条核对后统一处理，不要重复回复相同内容（全文用 relay_event 按 seq 读取）：\n'
+                          + '\n'.join(shown) + tail)
+
+    def _revive_coalesced(self, db, project, agent, seq):
+        """Turn a placeholder row back into its own delivery.
+
+        A coalesced row keeps its event id but no prompt: it was folded into a
+        head that has since been cancelled. Flipping that same row back to queued
+        avoids touching the UNIQUE(event,agent) slot, so nothing can duplicate.
+        """
+        row = db.execute("SELECT id FROM native_jobs WHERE project=? AND agent=? AND event=? AND status='coalesced'",
+                         (project, agent, seq)).fetchone()
+        if not row:
+            return False
+        found = db.execute('SELECT kind,actor,body FROM events WHERE seq=?', (seq,)).fetchone()
+        if not found:
+            return False
+        session_row = db.execute('SELECT session FROM native_bindings WHERE project=? AND agent=?',
+                                 (project, agent)).fetchone()
+        if not session_row:
+            return False
+        state = self.store.snapshot()
+        project_state = next((p for p in state['projects'] if p['id'] == project), None)
+        if not project_state:
+            return False
+        kind, actor, raw = found
+        generation = self._generation(db, project, agent)
+        wake = brief.brief(project_state, agent, kind, actor, json.loads(raw), seq=seq)
+        wake['binding_generation'] = generation
+        wake['rules_version'] = rules.VERSION
+        prompt = rules.digest(agent) + '\n\n本次唤起的项目事件（其余状态按需读取）：\n' + json.dumps(wake, ensure_ascii=False)
+        db.execute("UPDATE native_jobs SET status='queued',session=?,body=?,updated=? WHERE id=?",
+                   (session_row[0],
+                    json.dumps(dict(prompt=prompt, kind=kind, generation=generation, brief=wake, rules_full=False), ensure_ascii=False),
+                    time.time(), row[0]))
+        return True
+
+    def migrate_queued(self):
+        """Rebuild pre-optimisation queued prompts into the compact form.
+
+        A job written by the previous version carries the whole project in its
+        prompt. It has not been delivered yet, so nothing has been executed; but
+        rewriting it must not lose the event it refers to. The job id, its event
+        and its UNIQUE(event,agent) slot stay exactly as they are, and any event
+        ids it had already absorbed are preserved. Delivered, leased, cancelled
+        and uncertain rows are left alone: those are history or in flight.
+
+        Idempotent: a job already carrying `brief` is skipped, so a restart or a
+        second call costs nothing and changes nothing.
+        """
+        migrated = 0
+        state = self.store.snapshot()
+        projects = {p['id']: p for p in state['projects'] if not p['demo']}
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for job_id, project, agent, session, event, raw in db.execute(
+                    "SELECT id,project,agent,session,event,body FROM native_jobs WHERE status='queued'").fetchall():
+                try:
+                    body = json.loads(raw)
+                except ValueError:
+                    continue
+                if body.get('kind') in {'create-session', 'model-catalog', 'model-select', 'archive-session'}:
+                    continue
+                if body.get('brief') or event is None:
+                    continue
+                project_state = projects.get(project)
+                if not project_state:
+                    continue
+                found = db.execute('SELECT kind,actor,body FROM events WHERE seq=?', (event,)).fetchone()
+                if not found:
+                    continue
+                kind, actor, event_raw = found
+                detail = json.loads(event_raw)
+                wake = brief.brief(project_state, agent, kind, actor, detail, seq=event)
+                generation = self._generation(db, project, agent)
+                wake['binding_generation'] = generation
+                wake['rules_version'] = rules.VERSION
+                head = rules.digest(agent)
+                merged = list(body.get('merged_events') or [])
+                prompt = head + '\n\n本次唤起的项目事件（其余状态按需读取）：\n' + json.dumps(wake, ensure_ascii=False)
+                if merged:
+                    prompt += ('\n\n同一会话还有 ' + str(len(merged)) + ' 条待处理事件合并到本次唤醒，'
+                               '逐条核对后统一处理（全文用 relay_event 按 seq 读取）：seq '
+                               + ', '.join(str(s) for s in merged))
+                body.update(prompt=prompt, brief=wake, generation=generation,
+                            rules_full=False, migrated_from_legacy_prompt=True)
+                body.pop('prompt_base', None)
+                db.execute('UPDATE native_jobs SET body=?,updated=? WHERE id=?',
+                           (json.dumps(body, ensure_ascii=False), time.time(), job_id))
+                migrated += 1
+        return migrated
+
     def reconcile(self):
         """Re-check registrations after a crash instead of guessing by name.
 
@@ -278,39 +444,83 @@ class Runtime:
                 p=projects.get(project)
                 if not p or p['paused'] or session not in {s['id'] for s in sessions}:
                     continue
-                for seq,kind,actor,raw in db.execute('SELECT seq,kind,actor,body FROM events WHERE project=? ORDER BY seq',(project,)).fetchall():
+                # Only events never evaluated for this member are scanned, so a
+                # long project does not cost more per wake than a new one.
+                cursor_row=db.execute('SELECT seq FROM native_cursors WHERE project=? AND agent=?',(project,agent)).fetchone()
+                if cursor_row:
+                    cursor=cursor_row[0]
+                else:
+                    # Upgrade path. Seeding at MAX(native_jobs.event) would assume
+                    # every earlier event was already evaluated, which is false for
+                    # an event the discussion bound postponed. Seed at 0 instead:
+                    # the sweep re-applies the same filters, UNIQUE(event,agent)
+                    # makes already-delivered events free, postponed ones become
+                    # deferred records, and permanently filtered ones drop out.
+                    # Cost is one bounded pass per member, once.
+                    cursor=0
+                    db.execute('INSERT OR IGNORE INTO native_cursors VALUES(?,?,?)',(project,agent,cursor))
+                deferred={row[0] for row in db.execute('SELECT seq FROM native_deferred WHERE project=? AND agent=?',(project,agent))}
+                advanced=cursor
+                generation_db=self._generation(db,project,agent)
+                # Re-check postponed events first: one issue hitting the discussion
+                # bound must not hold back later events for other issues or tasks.
+                pending_seqs=sorted(deferred | {row[0] for row in db.execute(
+                    'SELECT seq FROM events WHERE project=? AND seq>? ORDER BY seq',(project,cursor))})
+                for seq in pending_seqs:
+                    found=db.execute('SELECT kind,actor,body FROM events WHERE seq=?',(seq,)).fetchone()
+                    if not found:
+                        db.execute('DELETE FROM native_deferred WHERE project=? AND agent=? AND seq=?',(project,agent,seq))
+                        advanced=max(advanced,seq)
+                        continue
+                    kind,actor,raw=found
                     detail=json.loads(raw)
                     if kind=='record_restore':
+                        advanced=seq
                         continue
                     if agent not in detail.get('recipients',[]) or actor==agent or kind not in {'task_queued','message','project_message','issue_create','resolve','review','report','accept','summary_request','assign','invite','pause'}:
+                        advanced=seq
                         continue
                     if kind=='task_queued' and any(t['id']==detail.get('task_id') and t.get('archived') for t in p['tasks']):
+                        advanced=seq
                         continue
                     if kind=='issue_create' and any(i['id']==detail.get('issue_id') and i.get('archived') for i in p['issues']):
+                        advanced=seq
                         continue
                     if kind=='project_message':
                         message_id=detail.get('message_id')
                         if message_id and any(m['id']==message_id and m.get('archived') for m in p.get('chat',[])):
+                            advanced=seq
                             continue
                     if kind=='report' and detail.get('status')!='review':
+                        advanced=seq
                         continue
                     if kind=='report' and agent!=p['assignments']['planner']:
+                        advanced=seq
                         continue
                     if kind=='task_queued' and agent!=p['assignments']['planner'] and not any(t['id']==detail.get('task_id') and t['owner']==agent for t in p['tasks']):
+                        advanced=seq
                         continue
                     if kind=='pause' and detail.get('paused') is not False:
+                        advanced=seq
                         continue
                     issue_id=detail.get('issue_id')
                     issue=next((i for i in p['issues'] if i['id']==issue_id),None)
                     if issue and issue.get('archived'):
+                        advanced=seq
                         continue
                     if kind=='message' and issue:
                         message_id=detail.get('message_id')
                         if message_id and any(m['id']==message_id and m.get('archived') for m in issue['messages']):
+                            advanced=max(advanced,seq)
+                            db.execute('DELETE FROM native_deferred WHERE project=? AND agent=? AND seq=?',(project,agent,seq))
                             continue
                         # Human messages reset the bounded autonomous discussion allowance.
                         latest_user=max((m for m in range(len(issue['messages'])) if issue['messages'][m]['actor']=='user'),default=-1)
                         if len(issue['messages'])-latest_user-1>=4:
+                            # Postponed, not skipped, and only for this event: later
+                            # events of other issues stay deliverable.
+                            db.execute('INSERT OR IGNORE INTO native_deferred VALUES(?,?,?,?,?)',(project,agent,seq,'issue-discussion-bound',time.time()))
+                            advanced=max(advanced,seq)
                             continue
                     if kind=='project_message':
                         # Same bound as issue chat: members stop after four consecutive
@@ -318,10 +528,24 @@ class Runtime:
                         chat=p.get('chat',[])
                         latest_user=max((n for n in range(len(chat)) if chat[n]['actor']=='user'),default=-1)
                         if len(chat)-latest_user-1>=4:
+                            db.execute('INSERT OR IGNORE INTO native_deferred VALUES(?,?,?,?,?)',(project,agent,seq,'chat-discussion-bound',time.time()))
+                            advanced=max(advanced,seq)
                             continue
-                    message={'project':p,'event':dict(seq=seq,kind=kind,actor=actor,detail=detail),'member':agent}
-                    prompt=f'你正在通过 Stage Relay 参与用户授权的项目。你的唯一成员身份是 {agent}；协作工具只使用属于 stage-relay-{agent} 这个 MCP 服务的工具，不要使用其他成员的同名工具。使用当前原应用的工具、插件、技能及适用的原生子 agent 完成职责。先调用 relay_inbox 核对最新状态。用户拥有最终决策权。遇到困难用 relay_raise_issue；群聊回复用 relay_send_message；执行成果用 relay_report 提交 review；监督用 relay_review；汇总用 relay_submit_summary。不要把同一消息重复回复。下面是任务与触发事件：\n'+json.dumps(message,ensure_ascii=False)
-                    db.execute('INSERT OR IGNORE INTO native_jobs VALUES(?,?,?,?,?,?,?,?)',(uid('delivery'),project,agent,session,seq,'queued',json.dumps(dict(prompt=prompt,kind=kind,generation=self._generation(db,project,agent)),ensure_ascii=False),time.time()))
+                    # The wake carries the event and the object it references, not
+                    # the accumulated project: evidence of finished boards, old
+                    # chat and resolved issues stay readable through relay_inbox
+                    # and relay_project, and are not re-sent on every wake.
+                    wake=brief.brief(p,agent,kind,actor,detail,seq=seq)
+                    wake['binding_generation']=generation_db
+                    wake['rules_version']=rules.VERSION
+                    rules_block=self._decide_rules(db,agent,session,generation_db)
+                    head=rules_block or rules.digest(agent)
+                    prompt=head+'\n\n本次唤起的项目事件（其余状态按需读取）：\n'+json.dumps(wake,ensure_ascii=False)
+                    db.execute('INSERT OR IGNORE INTO native_jobs VALUES(?,?,?,?,?,?,?,?)',(uid('delivery'),project,agent,session,seq,'queued',json.dumps(dict(prompt=prompt,kind=kind,generation=generation_db,brief=wake,rules_full=bool(rules_block)),ensure_ascii=False),time.time()))
+                    db.execute('DELETE FROM native_deferred WHERE project=? AND agent=? AND seq=?',(project,agent,seq))
+                    advanced=max(advanced,seq)
+                if advanced!=cursor:
+                    db.execute('INSERT INTO native_cursors VALUES(?,?,?) ON CONFLICT(project,agent) DO UPDATE SET seq=excluded.seq',(project,agent,advanced))
             # Never replay an expired lease: a crash may have happened after native enqueue.
             db.execute("UPDATE native_jobs SET status='uncertain' WHERE agent=? AND status='leased' AND updated<?",(agent,time.time()-30))
             pending=[]
@@ -345,10 +569,14 @@ class Runtime:
             groups={}
             for candidate in db.execute("SELECT id,project,session,body,event FROM native_jobs WHERE agent=? AND status='queued' ORDER BY event",(agent,)).fetchall():
                 try:
-                    kind=json.loads(candidate[3]).get('kind')
+                    queued_body=json.loads(candidate[3])
                 except ValueError:
                     continue
-                if kind in mergeable and candidate[4] is not None:
+                # Never fold across a binding generation: a job stamped with an
+                # older generation belongs to a different session contract.
+                if queued_body.get('generation') not in (None, self._generation(db,candidate[1],agent)):
+                    continue
+                if queued_body.get('kind') in mergeable and candidate[4] is not None:
                     groups.setdefault((candidate[1],candidate[2]),[]).append(candidate)
             absorbed=set()
             merged_into={}
@@ -358,37 +586,62 @@ class Runtime:
                 head=rows[0]
                 for extra in rows[1:]:
                     absorbed.add(extra[0])
-                merged_into[head[0]]=[r[4] for r in rows[1:]]
+                head_body=json.loads(head[3])
+                # Union, never overwrite: a job merged in an earlier round keeps
+                # every event id it already absorbed.
+                merged_into[head[0]]=list(dict.fromkeys(list(head_body.get('merged_events') or [])+[r[4] for r in rows[1:]]))
             for job_id in absorbed:
                 db.execute("UPDATE native_jobs SET status='coalesced',updated=? WHERE id=?",(time.time(),job_id))
             for row in db.execute("SELECT id,project,session,body,event FROM native_jobs WHERE agent=? AND status='queued' ORDER BY event",(agent,)).fetchall():
                 body=json.loads(row[3])
                 if row[0] in merged_into:
-                    lines=[]
-                    for seq in merged_into[row[0]]:
-                        found=db.execute('SELECT kind,actor,body FROM events WHERE seq=?',(seq,)).fetchone()
-                        if not found:
-                            continue
-                        lines.append(f'- seq={seq} kind={found[0]} actor={found[1]} detail={found[2]}')
-                    if lines:
-                        body['merged_events']=merged_into[row[0]]
-                        body['prompt']=body.get('prompt','')+'\n\n同一会话还有 '+str(len(lines))+' 条待处理事件已合并到本次唤醒，逐条核对后统一处理，不要重复回复相同内容：\n'+'\n'.join(lines)
-                        # Persist immediately: this job may stay queued for a busy
-                        # session, and the merge must survive until it is leased.
-                        db.execute("UPDATE native_jobs SET body=?,updated=? WHERE id=?",(json.dumps(body,ensure_ascii=False),time.time(),row[0]))
+                    # Union, never overwrite: a job merged in an earlier round
+                    # keeps every event id it already absorbed. Rebuilding from
+                    # the stored base keeps a second round from stacking text.
+                    self._rebuild_merge_tail(db, body, merged_into[row[0]])
+                    # Persist immediately: this job may stay queued for a busy
+                    # session, and the merge must survive until it is leased.
+                    db.execute("UPDATE native_jobs SET body=?,updated=? WHERE id=?",(json.dumps(body,ensure_ascii=False),time.time(),row[0]))
                 source=db.execute('SELECT kind,body FROM events WHERE seq=?',(row[4],)).fetchone() if row[4] is not None else None
-                if source:
-                    event_kind, event_raw=source
-                    event_detail=json.loads(event_raw)
-                    project_state=projects.get(row[1],{})
-                    issue=next((i for i in project_state.get('issues',[]) if i['id']==event_detail.get('issue_id')),None)
-                    task=next((t for t in project_state.get('tasks',[]) if t['id']==event_detail.get('task_id')),None)
-                    thread_message=project_state.get('chat',[]) if event_kind=='project_message' else issue.get('messages',[]) if issue else []
-                    message=next((m for m in thread_message if m['id']==event_detail.get('message_id')),None)
-                    stale=(task is not None and task.get('archived') and event_kind=='task_queued') or (issue is not None and issue.get('archived')) or (message is not None and message.get('archived'))
-                    if stale:
+                project_state=projects.get(row[1],{})
+                # Re-check every member of this wake, not only its head: a merged
+                # event whose task was recycled or whose issue was archived must
+                # not ride along inside a wake that is otherwise still valid.
+                wake_seqs=[row[4]] if row[4] is not None else []
+                wake_seqs+= [seq for seq in (body.get('merged_events') or []) if seq not in wake_seqs]
+                stale_members=[]
+                for check_seq in wake_seqs:
+                    found=db.execute('SELECT kind,body FROM events WHERE seq=?',(check_seq,)).fetchone()
+                    if not found:
+                        continue
+                    check_kind, check_raw=found
+                    check_detail=json.loads(check_raw)
+                    check_issue=next((i for i in project_state.get('issues',[]) if i['id']==check_detail.get('issue_id')),None)
+                    check_task=next((t for t in project_state.get('tasks',[]) if t['id']==check_detail.get('task_id')),None)
+                    thread=project_state.get('chat',[]) if check_kind=='project_message' else check_issue.get('messages',[]) if check_issue else []
+                    check_message=next((m for m in thread if m['id']==check_detail.get('message_id')),None)
+                    if ((check_task is not None and check_task.get('archived') and check_kind=='task_queued')
+                            or (check_issue is not None and check_issue.get('archived'))
+                            or (check_message is not None and check_message.get('archived'))):
+                        stale_members.append(check_seq)
+                if stale_members:
+                    remaining=[seq for seq in wake_seqs if seq not in stale_members]
+                    if row[4] in stale_members:
+                        # The head is gone. Any absorbed event that is still valid
+                        # must not die with it: give it back its own job instead
+                        # of cancelling the whole wake.
+                        db.execute("UPDATE native_jobs SET status='cancelled' WHERE id=?",(row[0],))
+                        for survivor in remaining:
+                            self._revive_coalesced(db,project,agent,survivor)
+                        continue
+                    if not remaining:
                         db.execute("UPDATE native_jobs SET status='cancelled' WHERE id=?",(row[0],))
                         continue
+                    if body.get('merged_events'):
+                        body['merged_events']=[seq for seq in body['merged_events'] if seq not in stale_members]
+                        self._rebuild_merge_tail(db, body, body['merged_events'])
+                        db.execute("UPDATE native_jobs SET body=?,updated=? WHERE id=?",
+                                   (json.dumps(body,ensure_ascii=False),time.time(),row[0]))
                 if body.get('kind')=='task_queued' and projects.get(row[1],{}).get('assignments',{}).get('planner')!=agent:
                     event=db.execute('SELECT body FROM events WHERE seq=?',(row[4],)).fetchone()
                     task_id=json.loads(event[0]).get('task_id') if event else None
@@ -473,6 +726,12 @@ class Runtime:
             if isinstance(payload.get('result'),dict):
                 detail['result']=payload['result']
             db.execute('UPDATE native_jobs SET status=?,body=?,updated=? WHERE id=?',(payload['status'],json.dumps(detail,ensure_ascii=False),time.time(),payload['id']))
+            # The native app actually took this wake, so the rules block it
+            # carried is now part of that session's context. Later wakes send
+            # only the digest until the session goes quiet or is rebound.
+            session_row=db.execute('SELECT session FROM native_jobs WHERE id=?',(payload['id'],)).fetchone()
+            if payload['status']=='delivered' and session_row and detail.get('rules_full'):
+                self._confirm_rules(db,agent,session_row[0])
             resource=detail.get('resource')
             if resource:
                 archived=payload['status']=='delivered'

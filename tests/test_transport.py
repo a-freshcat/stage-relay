@@ -102,6 +102,45 @@ class Transport(unittest.TestCase):
         self.assertFalse(reply["result"]["isError"])
         self.assertEqual(self.store.snapshot()["projects"][0]["summary"]["actor"],"antigravity")
 
+    def test_on_demand_reads_work_over_mcp(self):
+        status, data, _ = self.user("task_create", title="按需读取", owner="deepseek",
+                                    acceptance="证据可完整取回")
+        self.assertEqual(status, 200)
+        task_id = json.loads(data)["result"]["id"]
+        self.assertEqual(self.user("dispatch")[0], 200)
+        self.mcp("deepseek", [("relay_report", {"project_id": self.p["id"], "task_id": task_id,
+                                                "status": "review",
+                                                "evidence": "完整证据正文：" + "细节" * 300})])
+        replies = self.mcp("deepseek", [
+            ("relay_rules", {}),
+            ("relay_project", {"project_id": self.p["id"]}),
+            ("relay_task", {"project_id": self.p["id"], "task_id": task_id}),
+            ("relay_message", {"project_id": self.p["id"], "message_id": self.message_id()}),
+            ("relay_inbox", {"full": True}),
+            ("relay_list", {"project_id": self.p["id"], "kind": "chat", "limit": 1}),
+        ])
+        self.assertFalse(replies[0]["result"]["isError"], replies[0])
+        self.assertIn("身份与工具", json.loads(replies[0]["result"]["content"][0]["text"])["text"])
+        project = json.loads(replies[1]["result"]["content"][0]["text"])
+        self.assertEqual(project["tasks"][0]["id"], task_id)
+        task = json.loads(replies[2]["result"]["content"][0]["text"])
+        self.assertIn("完整证据正文", task["evidence"])
+        message = json.loads(replies[3]["result"]["content"][0]["text"])
+        self.assertEqual(message["body"], "跨会话读取单条消息")
+        full = json.loads(replies[4]["result"]["content"][0]["text"])
+        self.assertEqual(full["from_seq"], 0)
+        page = json.loads(replies[5]["result"]["content"][0]["text"])
+        self.assertEqual(page["returned"], 1)
+        self.assertIn("next_offset", page)
+        # Another member's project is refused rather than silently returned.
+        other = self.mcp("antigravity", [("relay_task", {"project_id": self.p["id"], "task_id": task_id})])[0]
+        self.assertTrue(other["result"]["isError"], other)
+
+    def message_id(self):
+        status, data, _ = self.user("project_message", body="跨会话读取单条消息")
+        self.assertEqual(status, 200)
+        return json.loads(data)["result"]["id"]
+
     def test_project_chat_across_panel_bridge_and_mcp(self):
         status,data,_=self.user("project_message",body="先在项目群聊里交接")
         self.assertEqual(status,200)

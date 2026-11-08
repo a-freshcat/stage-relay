@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import brief, rules
+
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -112,24 +114,167 @@ class Store:
     def _event(db, project, kind, actor, detail):
         db.execute("INSERT INTO events(project,kind,actor,body,created) VALUES(?,?,?,?,?)", (project, kind, actor, json.dumps(detail, ensure_ascii=False), now()))
 
-    def inbox(self, agent_id, after=0):
+    def inbox(self, agent_id, after=None, full=False):
+        """Incremental read: no `after` means "continue where I stopped".
+
+        `full=true` re-reads the event log from the very beginning, page by page.
+        It does not expand evidence: the projections stay summaries either way,
+        and complete text comes from relay_project / relay_task / relay_issue /
+        relay_message / relay_event / relay_list. The wording here says exactly
+        that, because "full" that still returns clipped evidence would be a lie.
+
+        The cursor is promoted only one call behind: a response that never
+        reaches the caller is re-delivered on the next call instead of being
+        silently consumed. The failure direction is a duplicate, never a loss.
+        """
+        if full:
+            after = 0
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             state = self._state(db.execute("SELECT body FROM workspace WHERE id=1").fetchone()[0])
             agent = get(state["agents"], agent_id, "成员")
             agent["last_seen"] = now()
-            db.execute("UPDATE workspace SET body=? WHERE id=1", (json.dumps(state, ensure_ascii=False),))
-            rows = db.execute("SELECT seq, project, kind, actor, body, created FROM events WHERE seq>? ORDER BY seq LIMIT 250", (int(after),)).fetchall()
             revision = db.execute("SELECT COALESCE(MAX(seq),0) FROM events").fetchone()[0]
+            if after is not None:
+                start = max(0, int(after))
+            else:
+                confirmed = int(agent.get("inbox_cursor") or 0)
+                pending = agent.get("inbox_pending")
+                if isinstance(pending, int) and pending > confirmed:
+                    # The caller came back, so it did receive the previous
+                    # response: promote the pending mark and continue from it.
+                    confirmed = pending
+                    agent["inbox_cursor"] = pending
+                start = confirmed
+            rows = db.execute("SELECT seq, project, kind, actor, body, created FROM events WHERE seq>? ORDER BY seq LIMIT 250", (start,)).fetchall()
         projects = [p for p in state["projects"] if not p["demo"] and (agent_id in p["assignments"].values() or any(t["owner"] == agent_id for t in p["tasks"]) or any(agent_id in i["members"] for i in p["issues"]))]
         project_ids = {p["id"] for p in projects}
         events = []
         for seq, project, kind, actor, body, created in rows:
             detail = json.loads(body)
             if project in project_ids and agent_id in detail.get("recipients", []):
-                events.append(dict(seq=seq, project=project, kind=kind, actor=actor, detail=detail, created=created))
-        return {"agent_id": agent_id, "events": events, "projects": projects, "cursor": rows[-1][0] if rows else revision,
-                "has_more": len(rows) == 250, "notice": "paused=true 时停止领取新工作；读取当前状态后再行动。事件不表示应用已执行。"}
+                events.append(dict(seq=seq, project=project, kind=kind, actor=actor, detail=brief.trimmed(detail), created=created))
+        cursor = rows[-1][0] if rows else revision
+        if after is None:
+            # Persist the read as *pending*, not consumed. A bridge that dies
+            # before flushing its reply would otherwise leave the member having
+            # "read" events it never saw — a loss. The next call promotes it.
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                latest = self._state(db.execute("SELECT body FROM workspace WHERE id=1").fetchone()[0])
+                member = get(latest["agents"], agent_id, "成员")
+                if cursor > int(member.get("inbox_cursor") or 0):
+                    member["inbox_pending"] = cursor
+                db.execute("UPDATE workspace SET body=? WHERE id=1", (json.dumps(latest, ensure_ascii=False),))
+        return {
+            "agent_id": agent_id,
+            # Summaries, not the whole record: the goal, the structure and the
+            # state now, with evidence and full history one explicit read away.
+            "projects": [brief.project_summary(p) for p in projects],
+            "events": events,
+            "cursor": cursor,
+            "from_seq": start,
+            "has_more": len(rows) == 250,
+            "page": {"size": 250, "returned": len(rows), "next_after": cursor,
+                     "note": "还有更多事件时用 after=<next_after> 继续读取，不丢事件。"},
+            "rules": {"version": rules.VERSION, "digest": rules.digest(agent_id), "tool": "relay_rules"},
+            "read": {
+                "project": "relay_project project_id=… 读取完整项目（含全部证据、群聊与议题历史）",
+                "task": "relay_task project_id task_id",
+                "issue": "relay_issue project_id issue_id",
+                "message": "relay_message project_id message_id [issue_id] 读取单条消息原文",
+                "list": "relay_list project_id kind=tasks|issues|chat|messages|events 分页读取完整条目，无需读整个项目",
+                "event": "relay_event project_id seq",
+                "rules": "relay_rules 规则原文",
+                "history": "从头分页重读事件日志传 full=true 或 after=0；这两者只扩大事件范围，证据仍是摘要。",
+                "complete": "完整证据与全文用 relay_project / relay_task / relay_issue / relay_message / relay_list 读取。"
+            },
+            "notice": "paused=true 时停止领取新工作；读取当前状态后再行动。事件不表示应用已执行。",
+        }
+
+    def readable(self, agent_id, project_id):
+        """A member may read the full record of projects it belongs to."""
+        with self.connect() as db:
+            state = self._state(db.execute("SELECT body FROM workspace WHERE id=1").fetchone()[0])
+        get(state["agents"], agent_id, "成员")
+        project = get(state["projects"], project_id, "任务")
+        mine = (agent_id in project["assignments"].values()
+                or any(t["owner"] == agent_id for t in project["tasks"])
+                or any(agent_id in i["members"] for i in project["issues"]))
+        if project["demo"] or not mine:
+            raise Invalid("你不属于此任务，无法读取。")
+        return project
+
+    def read_project(self, agent_id, project_id):
+        return self.readable(agent_id, project_id)
+
+    def read_task(self, agent_id, project_id, task_id):
+        return get(self.readable(agent_id, project_id)["tasks"], task_id, "工作板块")
+
+    def read_issue(self, agent_id, project_id, issue_id):
+        return get(self.readable(agent_id, project_id)["issues"], issue_id, "议题")
+
+    def read_message(self, agent_id, project_id, message_id, issue_id=None):
+        """One message, whole: the project thread or a named issue thread."""
+        project = self.readable(agent_id, project_id)
+        threads = []
+        if issue_id:
+            threads.append(get(project["issues"], issue_id, "议题")["messages"])
+        else:
+            threads.append(project.get("chat", []))
+            threads.extend(issue["messages"] for issue in project["issues"])
+        for thread in threads:
+            found = next((m for m in thread if m["id"] == message_id), None)
+            if found:
+                return found
+        raise Invalid("找不到这条消息，或它不属于该项目。")
+
+    def read_list(self, agent_id, project_id, kind, offset=0, limit=50, issue_id=None):
+        """Paged listing, so one entry never costs a whole project read.
+
+        `kind` is one of tasks / issues / chat / messages / events. Everything is
+        full text here; pagination is the only thing that bounds it, and the
+        reply always states the total so a reader can tell a page from the whole.
+        """
+        project = self.readable(agent_id, project_id)
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise Invalid("分页起点无效。")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise Invalid("每页条数请填 1-200。")
+        if kind == "tasks":
+            items = project["tasks"]
+        elif kind == "issues":
+            items = project["issues"]
+        elif kind == "chat":
+            items = project.get("chat", [])
+        elif kind == "messages":
+            issue = get(project["issues"], issue_id, "议题")
+            items = issue["messages"]
+        elif kind == "events":
+            with self.connect() as db:
+                rows = db.execute("SELECT seq,kind,actor,body,created FROM events WHERE project=? ORDER BY seq",
+                                  (project_id,)).fetchall()
+            items = [dict(seq=r[0], kind=r[1], actor=r[2], detail=json.loads(r[3]), created=r[4]) for r in rows]
+        else:
+            raise Invalid("分页类型仅支持 tasks / issues / chat / messages / events。")
+        page = items[offset:offset + limit]
+        return {
+            "project_id": project_id, "kind": kind,
+            "total": len(items), "offset": offset, "returned": len(page),
+            "next_offset": offset + len(page) if offset + len(page) < len(items) else None,
+            "items": page,
+            "note": "这是分页结果，不是全部；按 next_offset 继续读取，或直接用 relay_task / relay_issue / relay_message 取指定对象。",
+        }
+
+    def read_event(self, agent_id, project_id, seq):
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
+            raise Invalid("事件序号无效。")
+        self.readable(agent_id, project_id)
+        with self.connect() as db:
+            row = db.execute("SELECT seq, project, kind, actor, body, created FROM events WHERE seq=?", (seq,)).fetchone()
+        if not row or row[1] != project_id:
+            raise Invalid("找不到这条事件，或它不属于该项目。")
+        return dict(seq=row[0], project=row[1], kind=row[2], actor=row[3], detail=json.loads(row[4]), created=row[5])
 
     def apply(self, action, args, actor="user"):
         if not isinstance(args, dict):

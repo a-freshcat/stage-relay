@@ -50,6 +50,25 @@ def _inside(root, path):
         return False
 
 
+def atomic_replace(staged, target):
+    """Replace a file atomically, tolerating a transient Windows file handle.
+
+    Indexers, antivirus and a just-closed reader can hold the destination for a
+    few milliseconds on Windows and fail the rename with WinError 5/32. Retrying
+    is safe because os.replace is atomic: either the previous file or the new one
+    is in place, never a truncated mix.
+    """
+    last = None
+    for attempt in range(8):
+        try:
+            os.replace(staged, target)
+            return
+        except PermissionError as exc:
+            last = exc
+            time.sleep(0.02 * (attempt + 1))
+    raise last
+
+
 def _referenced(projects):
     refs = set()
     for project in projects:
@@ -236,7 +255,7 @@ class Cleanup:
         def flush():
             staged = root / "manifest.json.tmp"
             staged.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(staged, root / "manifest.json")
+            atomic_replace(staged, root / "manifest.json")
 
         done = {str(Path(entry["rel"])) for key in ("moved", "skipped", "failed") for entry in result.get(key, [])}
         # A crash can land between the move and the manifest write. The recorded
@@ -303,7 +322,7 @@ class Cleanup:
         # running twice, including after the lock goes stale.
         staged = plan_file.with_suffix(".staged")
         staged.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-        staged.replace(plan_file)
+        atomic_replace(staged, plan_file)
         claimed.unlink(missing_ok=True)
         flush()
         return result
@@ -504,7 +523,7 @@ class Cleanup:
             result["restore_failed"] = failed
             staged = root / "manifest.json.tmp"
             staged.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(staged, manifest)
+            atomic_replace(staged, manifest)
         pending = [item for item in pending if str(Path(item["rel"])) not in set(restored)]
         # A recreated file means the user already worked there: refuse that item,
         # keep restoring the rest, and persist progress after every move so a
@@ -531,17 +550,17 @@ class Cleanup:
                 result["restore_failed"] = failed
                 staged = root / "manifest.json.tmp"
                 staged.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-                os.replace(staged, manifest)
+                atomic_replace(staged, manifest)
                 continue
             restored.append(str(rel))
             result["restored"] = sorted(restored_ids | set(restored))
             result["restore_failed"] = failed
             staged = root / "manifest.json.tmp"
             staged.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(staged, manifest)
+            atomic_replace(staged, manifest)
         result["restored"] = sorted(restored_ids | set(restored))
         result["restore_failed"] = failed
         staged = root / "manifest.json.tmp"
         staged.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(staged, manifest)
+        atomic_replace(staged, manifest)
         return dict(project=project_id, plan_id=plan_id, restored=restored, skipped=skipped, failed=failed)

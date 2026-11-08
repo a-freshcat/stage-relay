@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import __version__
+from . import __version__, rules
 from .domain import Invalid, Store, export_markdown
 from .cleanup import Cleanup, scratch_for
 from .connections import Connections
@@ -312,7 +312,32 @@ class Handler(BaseHTTPRequestHandler):
                 elif action == 'runtime_created':
                     result = self.server.runtime.created(actor,body.get('args',{}))
                 elif action == "inbox":
-                    result = self.server.store.inbox(actor, body.get("args", {}).get("after", 0))
+                    # An absent `after` means "continue from my cursor"; an explicit
+                    # 0 means "re-read everything", so the two must stay distinct.
+                    args = body.get("args", {})
+                    result = self.server.store.inbox(actor, args.get("after"), full=args.get("full") is True)
+                elif action == "rules":
+                    result = {"version": rules.VERSION, "text": rules.full(actor)}
+                elif action == "read_project":
+                    result = self.server.store.read_project(actor, body.get("args", {}).get("project_id"))
+                elif action == "read_task":
+                    args = body.get("args", {})
+                    result = self.server.store.read_task(actor, args.get("project_id"), args.get("task_id"))
+                elif action == "read_issue":
+                    args = body.get("args", {})
+                    result = self.server.store.read_issue(actor, args.get("project_id"), args.get("issue_id"))
+                elif action == "read_message":
+                    args = body.get("args", {})
+                    result = self.server.store.read_message(actor, args.get("project_id"),
+                                                            args.get("message_id"), args.get("issue_id"))
+                elif action == "read_list":
+                    args = body.get("args", {})
+                    result = self.server.store.read_list(actor, args.get("project_id"), args.get("kind"),
+                                                         args.get("offset", 0), args.get("limit", 50),
+                                                         args.get("issue_id"))
+                elif action == "read_event":
+                    args = body.get("args", {})
+                    result = self.server.store.read_event(actor, args.get("project_id"), args.get("seq"))
                 elif action in AGENT_ACTIONS:
                     result = self.server.store.apply(action, body.get("args", {}), actor)
                 else:
