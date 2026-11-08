@@ -1,0 +1,40 @@
+data/
+__pycache__/
+*.pyc
+qa/*.log
+qa/*.pid
+qa/browser-profile-*/
+qa/test-state-*/
+qa/test-cleanup-*/
+qa/release-*-data/
+qa/recycle-e2e-data/
+qa/v*-data/
+qa/ab-verify/
+qa/rework-verify/
+qa/ui-data/
+qa/desktop-data/
+qa/desktop-v2-data/
+qa/desktop-v2-fake-home/
+qa/desktop-v3-data/
+qa/desktop-v3-fake-home/
+qa/desktop-v31-data/
+qa/frozen-native-data/
+qa/native-sandbox/
+qa/desktop-apps/
+qa/native-probe-*/
+qa/native-writer-lifecycle/
+qa/codex-schema/
+qa/codex-037-review-*/
+qa/ui-fixture/
+qa/.ui-probe.mjs
+
+# Generated UI fixture: its sqlite store, workspace and bridge tokens are local
+# artifacts. The seed script that recreates them is committed instead.
+qa/chat-ui/
+
+.venv/
+build/
+release/
+
+# Local backups of real project databases and reviewer evidence: never published.
+archive/

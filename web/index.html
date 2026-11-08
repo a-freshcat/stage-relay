@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Stage Relay 本地多 Agent 协作面板：任务分工、议题协商、用户决策与成果交付。">
+  <title>Stage Relay · 多 Agent 协作台</title>
+  <link rel="icon" href="/assets/relay.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <div id="app"><div class="boot">Stage Relay<span>正在读取本地任务…</span></div></div>
+  <dialog id="modal" aria-labelledby="modal-title"></dialog>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <input type="file" id="attachment-input" multiple hidden>
+</body>
+</html>
