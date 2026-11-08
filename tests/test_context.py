@@ -145,12 +145,45 @@ class ContextGrowth(unittest.TestCase):
         self.store.apply("project_message", {"project_id": self.pid, "body": "一"})
         first = self.store.inbox("deepseek")
         self.assertTrue(first["events"])
+        # Without an ack the window does not move: reading is not consuming.
+        again = self.store.inbox("deepseek")
+        self.assertEqual(again["from_seq"], 0)
+        self.assertEqual([e["seq"] for e in again["events"]], [e["seq"] for e in first["events"]])
         self.store.apply("project_message", {"project_id": self.pid, "body": "二"})
-        second = self.store.inbox("deepseek")
+        second = self.store.inbox("deepseek", ack=first["next_ack"])
         self.assertTrue(all(e["seq"] > first["cursor"] for e in second["events"]))
         self.assertLess(len(second["events"]), len(first["events"]) + 1)
         everything = self.store.inbox("deepseek", after=0)
         self.assertGreaterEqual(len(everything["events"]), len(first["events"]))
+
+    def test_a_lost_inbox_response_does_not_lose_events(self):
+        """Codex's repro: read, drop the reply, read again — nothing may vanish."""
+        self.store.apply("project_message", {"project_id": self.pid, "body": "不能丢"})
+        first = self.store.inbox("codex")
+        self.assertTrue(any(e["kind"] == "project_message" for e in first["events"]))
+        # The reply never reached the caller: it never got to send an ack.
+        second = self.store.inbox("codex")
+        self.assertEqual([e["seq"] for e in second["events"]], [e["seq"] for e in first["events"]])
+        # A second bridge reading concurrently cannot consume it for the first.
+        other = self.store.inbox("codex")
+        self.assertEqual(len(other["events"]), len(first["events"]))
+        # Only an explicit acknowledgement advances, and it advances exactly there.
+        third = self.store.inbox("codex", ack=first["next_ack"])
+        self.assertEqual(third["from_seq"], first["next_ack"])
+        self.assertEqual(third["events"], [])
+        self.assertEqual(self.store.inbox("codex")["from_seq"], first["next_ack"])
+
+    def test_inbox_ack_cannot_move_backwards(self):
+        self.store.apply("project_message", {"project_id": self.pid, "body": "一"})
+        first = self.store.inbox("deepseek", ack=5)
+        self.assertEqual(first["acked"], 5)
+        # A stale or hostile lower acknowledgement is ignored, not honoured.
+        back = self.store.inbox("deepseek", ack=1)
+        self.assertEqual(back["acked"], 5)
+        with self.assertRaises(Invalid):
+            self.store.inbox("deepseek", ack=-1)
+        with self.assertRaises(Invalid):
+            self.store.inbox("deepseek", ack="9")
 
     def test_inbox_returns_summaries_not_full_projects(self):
         self.grow(5)
@@ -418,13 +451,14 @@ class ContextGrowth(unittest.TestCase):
             self.store.read_message("deepseek", self.pid, "missing")
         with self.assertRaises(Invalid):
             self.store.read_message("antigravity", self.pid, message["id"])
-        # `full=True` is the explicit way to re-read everything.
+        # `full=True` is the explicit way to re-read everything from the start.
         self.store.inbox("deepseek")
         after_first = self.store.inbox("deepseek")
         everything = self.store.inbox("deepseek", full=True)
         self.assertEqual(everything["from_seq"], 0)
         self.assertGreaterEqual(len(everything["events"]), len(after_first["events"]))
         self.assertIn("next_after", everything["page"])
+        self.assertIn("next_ack", everything)
 
 
 if __name__ == "__main__":

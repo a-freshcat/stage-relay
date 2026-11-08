@@ -315,7 +315,9 @@ class Handler(BaseHTTPRequestHandler):
                     # An absent `after` means "continue from my cursor"; an explicit
                     # 0 means "re-read everything", so the two must stay distinct.
                     args = body.get("args", {})
-                    result = self.server.store.inbox(actor, args.get("after"), full=args.get("full") is True)
+                    result = self.server.store.inbox(actor, args.get("after"),
+                                                     full=args.get("full") is True,
+                                                     ack=args.get("ack"))
                 elif action == "rules":
                     result = {"version": rules.VERSION, "text": rules.full(actor)}
                 elif action == "read_project":

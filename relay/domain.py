@@ -114,8 +114,8 @@ class Store:
     def _event(db, project, kind, actor, detail):
         db.execute("INSERT INTO events(project,kind,actor,body,created) VALUES(?,?,?,?,?)", (project, kind, actor, json.dumps(detail, ensure_ascii=False), now()))
 
-    def inbox(self, agent_id, after=None, full=False):
-        """Incremental read: no `after` means "continue where I stopped".
+    def inbox(self, agent_id, after=None, full=False, ack=None):
+        """Incremental read: no `after` means "continue from my acknowledged point".
 
         `full=true` re-reads the event log from the very beginning, page by page.
         It does not expand evidence: the projections stay summaries either way,
@@ -123,9 +123,14 @@ class Store:
         relay_message / relay_event / relay_list. The wording here says exactly
         that, because "full" that still returns clipped evidence would be a lie.
 
-        The cursor is promoted only one call behind: a response that never
-        reaches the caller is re-delivered on the next call instead of being
-        silently consumed. The failure direction is a duplicate, never a loss.
+        The position never advances on its own. A member sees the same events
+        until it says, in a later call, that it actually has them:
+        `ack=<next_ack>`. That is the only proof the previous reply reached the
+        caller — "the caller called again" is not, because a retry, a second
+        bridge and a dropped response are indistinguishable. Until the ack
+        arrives the events stay in the window, so a lost reply costs a
+        duplicate, never a loss. `uncertain` deliveries are still never re-sent:
+        reading is not executing.
         """
         if full:
             after = 0
@@ -135,16 +140,18 @@ class Store:
             agent = get(state["agents"], agent_id, "成员")
             agent["last_seen"] = now()
             revision = db.execute("SELECT COALESCE(MAX(seq),0) FROM events").fetchone()[0]
+            confirmed = int(agent.get("inbox_acked") or 0)
+            if ack is not None:
+                if not isinstance(ack, int) or isinstance(ack, bool) or ack < 0:
+                    raise Invalid("确认位置无效。")
+                if ack > confirmed:
+                    agent["inbox_acked"] = ack
+                    confirmed = ack
+                    db.execute("UPDATE workspace SET body=? WHERE id=1",
+                               (json.dumps(state, ensure_ascii=False),))
             if after is not None:
                 start = max(0, int(after))
             else:
-                confirmed = int(agent.get("inbox_cursor") or 0)
-                pending = agent.get("inbox_pending")
-                if isinstance(pending, int) and pending > confirmed:
-                    # The caller came back, so it did receive the previous
-                    # response: promote the pending mark and continue from it.
-                    confirmed = pending
-                    agent["inbox_cursor"] = pending
                 start = confirmed
             rows = db.execute("SELECT seq, project, kind, actor, body, created FROM events WHERE seq>? ORDER BY seq LIMIT 250", (start,)).fetchall()
         projects = [p for p in state["projects"] if not p["demo"] and (agent_id in p["assignments"].values() or any(t["owner"] == agent_id for t in p["tasks"]) or any(agent_id in i["members"] for i in p["issues"]))]
@@ -155,17 +162,6 @@ class Store:
             if project in project_ids and agent_id in detail.get("recipients", []):
                 events.append(dict(seq=seq, project=project, kind=kind, actor=actor, detail=brief.trimmed(detail), created=created))
         cursor = rows[-1][0] if rows else revision
-        if after is None:
-            # Persist the read as *pending*, not consumed. A bridge that dies
-            # before flushing its reply would otherwise leave the member having
-            # "read" events it never saw — a loss. The next call promotes it.
-            with self.connect() as db:
-                db.execute("BEGIN IMMEDIATE")
-                latest = self._state(db.execute("SELECT body FROM workspace WHERE id=1").fetchone()[0])
-                member = get(latest["agents"], agent_id, "成员")
-                if cursor > int(member.get("inbox_cursor") or 0):
-                    member["inbox_pending"] = cursor
-                db.execute("UPDATE workspace SET body=? WHERE id=1", (json.dumps(latest, ensure_ascii=False),))
         return {
             "agent_id": agent_id,
             # Summaries, not the whole record: the goal, the structure and the
@@ -174,6 +170,9 @@ class Store:
             "events": events,
             "cursor": cursor,
             "from_seq": start,
+            "acked": confirmed,
+            "next_ack": cursor,
+            "ack_hint": "确认收到后再调用时传 ack=<next_ack>；不传则下次仍从同一位置开始。",
             "has_more": len(rows) == 250,
             "page": {"size": 250, "returned": len(rows), "next_after": cursor,
                      "note": "还有更多事件时用 after=<next_after> 继续读取，不丢事件。"},

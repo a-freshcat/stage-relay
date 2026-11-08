@@ -24,7 +24,7 @@ STR = {"type": "string"}
 INT = {"type": "integer", "minimum": 1}
 PROJECT = {"project_id": STR}
 TOOLS = [
-    {"name": "relay_inbox", "description": "读取分配给当前成员的任务与协作事件。默认只返回项目概要、事件摘要与游标；完整证据、群聊与议题历史用 relay_project / relay_task / relay_issue / relay_message / relay_event 按需读取。重读全部历史传 full=true。保留 cursor 供下一次 after 使用。", "inputSchema": schema({"after": {"type": "integer", "minimum": 0}, "full": {"type": "boolean"}})},
+    {"name": "relay_inbox", "description": "读取分配给当前成员的任务与协作事件。默认只返回项目概要、事件摘要与游标；完整证据、群聊与议题历史用 relay_project / relay_task / relay_issue / relay_message / relay_event / relay_list 按需读取。位置不会自动前进：确认这一批已收到，再传 ack=<next_ack> 推进；不传 ack 会重复返回同一批（宁重复不丢失）。从头分页重读传 full=true 或 after=0。", "inputSchema": schema({"after": {"type": "integer", "minimum": 0}, "full": {"type": "boolean"}, "ack": {"type": "integer", "minimum": 0}})},
     {"name": "relay_rules", "description": "读取固定协作规则原文。会话新建、换绑、上下文压缩或宿主重建后调用一次即可恢复身份与权限约束；不占用每次唤醒。", "inputSchema": schema()},
     {"name": "relay_project", "description": "按需读取一个项目的完整记录：全部板块与证据、议题全部消息、项目群聊全文、决定历史。", "inputSchema": schema(PROJECT, ["project_id"])},
     {"name": "relay_task", "description": "按需读取一个工作板块的完整记录，含执行依据、核验依据与历史核验参考。", "inputSchema": schema(PROJECT | {"task_id": STR}, ["project_id", "task_id"])},
