@@ -735,8 +735,25 @@ const actions = {
   'insert-mention':el => {const t=currentThread();if(t)ui.drafts[t.id]=(ui.drafts[t.id] || '')+`@${name(el.dataset.agent)} `;closeModal();render();$('#chat-input')?.focus();},
 };
 
+// A rebuild between mousedown and mouseup removes the pressed element, so the
+// click never fires and the button looks dead — the user presses again and it
+// works "sometimes". Remember what was pressed on pointerdown and, if the click
+// lands on something else, resolve the action from that record.
+let pressedAction = null;
+document.addEventListener('pointerdown',event => {
+  const el = event.target.closest?.('[data-action]');
+  pressedAction = el && !el.disabled
+    ? {action: el.dataset.action, dataset: {...el.dataset}, at: Date.now()}
+    : null;
+}, true);
 document.addEventListener('click',async event => {
-  const el = event.target.closest('[data-action]');
+  let el = event.target.closest('[data-action]');
+  if (!el && pressedAction && Date.now() - pressedAction.at < 1500) {
+    // Only a missing target indicates replacement between down and click.
+    // A disabled replacement is a fresh decision and must stay disabled.
+    el = {dataset: pressedAction.dataset, disabled: false};
+  }
+  pressedAction = null;
   if (!el || el.disabled) return;
   const action = actions[el.dataset.action];
   if (action) {
@@ -797,12 +814,26 @@ $('#attachment-input').addEventListener('change',async event => {
   } catch(error) {toast(error.message,true);}
   finally {input.value='';render();}
 });
+// Volatile timestamps change on every poll without changing anything the page
+// shows: a member's last contact, a host's freshness stamp, a job's updated
+// field. Treating them as "state changed" rebuilt the whole panel every 2.5 s,
+// which drops a click that lands between mousedown and mouseup — the user sees a
+// button that "sometimes does nothing". Compare everything else.
+const VOLATILE_KEYS = new Set(['last_seen', 'seen', 'updated']);
+function renderKey(value) {
+  if (Array.isArray(value)) return '[' + value.map(renderKey).join(',') + ']';
+  if (value && typeof value === 'object') {
+    return '{' + Object.keys(value).filter(k => !VOLATILE_KEYS.has(k)).sort()
+      .map(k => JSON.stringify(k) + ':' + renderKey(value[k])).join(',') + '}';
+  }
+  return JSON.stringify(value === undefined ? null : value);
+}
 async function poll() {
   if (ui.polling) return;
   ui.polling = true;
   try {
     const next = await request('/api/state');
-    const changed = !state || state.revision !== next.revision || JSON.stringify(state.agents) !== JSON.stringify(next.agents) || JSON.stringify(state.runtime)!==JSON.stringify(next.runtime) || JSON.stringify(state.codexNative)!==JSON.stringify(next.codexNative) || ui.offline;
+    const changed = !state || renderKey(state) !== renderKey(next) || ui.offline;
     state = next;ui.offline = false;
     if (changed) {
       if (ui.composing || document.activeElement?.id === 'chat-input') ui.pendingRender = true;

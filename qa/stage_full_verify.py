@@ -1,4 +1,4 @@
-"""End-to-end check of the 0.1.8 stage path against a live panel.
+"""End-to-end check of the packaged stage path against a live panel.
 
 Not an isolated bridge-permission test: it drives the real panel over HTTP for the
 user's own actions and the real packaged MCP bridge for the members', then reads
@@ -15,10 +15,10 @@ import sys
 import urllib.request
 from pathlib import Path
 
-VERSION = sys.argv[3] if len(sys.argv) > 3 else "0.1.9"
+VERSION = sys.argv[3] if len(sys.argv) > 3 else "0.1.10"
 
 ROOT = Path(__file__).resolve().parent.parent
-BRIDGE = ROOT / "release/StageRelay-0.1.9/Stage Relay/StageRelayBridge.exe"
+BRIDGE = ROOT / f"release/StageRelay-{VERSION}/Stage Relay/StageRelayBridge.exe"
 BASE = sys.argv[1]
 DATA = Path(sys.argv[2])
 PORT = BASE.rsplit(":", 1)[1]

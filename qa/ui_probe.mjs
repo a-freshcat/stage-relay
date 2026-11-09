@@ -58,7 +58,7 @@ const FileReader = class { readAsDataURL() { this.onerror?.(new Error('unused'))
 `;
 
 const epilogue = `
-globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, resolveMentions, decisions, openStage, openStages, render};
+globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, resolveMentions, decisions, openStage, openStages, render, renderKey, actions};
 export {};
 `;
 
@@ -296,6 +296,58 @@ check('全部阶段记录指出缺少汇总的已解决议题', all.includes('�
 check('全部阶段记录无缺字段', !all.includes('undefined') && !all.includes('NaN'), all.slice(0, 300));
 probe.openStage('does-not-exist');
 check('未知阶段给出可读提示而不是空弹窗', probe.node('#modal').innerHTML.includes('阶段汇总') === true);
+
+// A poll that only bumps volatile timestamps must not rebuild the DOM: a rebuild
+// between mousedown and mouseup swallows the click, which looks like a dead
+// button. Real changes must still render.
+const sameShape = JSON.parse(JSON.stringify(probe.state()));
+check('仅有易变时间戳时不重绘', probe.renderKey(probe.state()) === probe.renderKey(sameShape));
+sameShape.agents = sameShape.agents.map(a => ({...a, last_seen: '2026-11-09T23:59:59+00:00'}));
+check('成员最近联系时间不算内容变化', probe.renderKey(probe.state()) === probe.renderKey(sameShape));
+// Start from a state that already carries runtime data, then move only the stamps.
+probe.state().runtime = {hosts: [{agent:'codex', online:true, seen: 1}], jobs: [{id:'j', updated: 2, status:'queued'}], bindings: []};
+const stamped = JSON.parse(JSON.stringify(probe.state()));
+stamped.runtime.hosts[0].seen = 987654;
+stamped.runtime.jobs[0].updated = 987654;
+check('主机与任务时间戳不算内容变化', probe.renderKey(probe.state()) === probe.renderKey(stamped));
+stamped.runtime.jobs[0].status = 'delivered';
+check('任务状态变化触发重绘', probe.renderKey(probe.state()) !== probe.renderKey(stamped));
+stamped.runtime.jobs[0].status = 'queued';
+sameShape.revision = (probe.state().revision || 0) + 1;
+check('新事件确实触发重绘', probe.renderKey(probe.state()) !== probe.renderKey(sameShape));
+sameShape.revision = probe.state().revision;
+sameShape.agents[0].session = 'changed-session';
+check('成员会话变化触发重绘', probe.renderKey(probe.state()) !== probe.renderKey(sameShape));
+
+// A rebuild between pointerdown and click removes the pressed button, so the
+// browser fires the click on a detached or different node. The action recorded at
+// pointerdown must still run, otherwise the control looks dead to the user.
+await (async () => {
+  const down = probe.listeners.get('pointerdown');
+  const click = probe.listeners.get('click');
+  probe.ui.page = 'overview';
+  const pressed = {dataset: {action: 'nav', page: 'deliveries'}, disabled: false};
+  down({target: {closest: () => pressed}});
+  // The element is gone by the time the click arrives.
+  await click({target: {closest: () => null}});
+  check('按下后节点被重建，操作仍然执行', probe.ui.page === 'deliveries', probe.ui.page);
+})();
+await (async () => {
+  const down = probe.listeners.get('pointerdown');
+  const click = probe.listeners.get('click');
+  probe.ui.page = 'overview';
+  down({target: {closest: () => null}});
+  await click({target: {closest: () => null}});
+  check('没有按下的点击不会误触发', probe.ui.page === 'overview', probe.ui.page);
+})();
+await (async () => {
+  const down = probe.listeners.get('pointerdown');
+  const click = probe.listeners.get('click');
+  probe.ui.page = 'overview';
+  down({target: {closest: () => ({dataset: {action: 'nav', page: 'deliveries'}, disabled: false})}});
+  await click({target: {closest: () => ({dataset: {action: 'nav', page: 'settings'}, disabled: true})}});
+  check('被禁用的替换按钮保持禁用', probe.ui.page === 'overview', probe.ui.page);
+})();
 
 console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL UI CHECKS PASSED');
 process.exit(failures.length ? 1 : 0);
