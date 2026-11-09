@@ -219,6 +219,22 @@ class Workflows(unittest.TestCase):
         with self.assertRaises(Invalid):
             self.act("summary_submit", "codex", body="重复提交")
 
+    def test_a_mention_inside_code_is_not_a_mention(self):
+        """Talking about `@codex` must not route to codex, nor be refused."""
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()
+        inline = self.act("message", "user", issue_id=i["id"], body="我把 `@codex` 写成代码块")
+        self.assertTrue(inline["body"])
+        fenced = self.act("message", "user", issue_id=i["id"],
+                          body="示例：\n```\n@codex 只是说明\n```\n结束")
+        self.assertTrue(fenced["body"])
+        events = [e for e in self.store.inbox("codex")["events"]
+                  if e["kind"] == "message" and e["detail"].get("issue_id") == i["id"]]
+        # Neither is addressed, so both take the ordinary whole-thread path.
+        self.assertTrue(all(not e["detail"].get("mentions") for e in events), events)
+        self.assertEqual(events[-1]["detail"]["recipients"], ["codex", "deepseek"])
+
     def test_a_completed_stage_is_summarisable_while_another_issue_is_open(self):
         done = self.review_ready()
         self.act("review", "codex", task_id=done["id"], approved=True, evidence="核验通过")

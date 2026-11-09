@@ -608,7 +608,10 @@ async function sendMessage() {
 // server receives is an id it can verify rather than a guess from the text.
 function resolveMentions(body){
   const found = [];
-  for (const match of (body || '').matchAll(/@([^\s@,，。:：;；!！?？'"()\[\]<>|]+)/g)) {
+  // Code spans describe mentions rather than make them, so they are dropped
+  // before scanning — same rule the server applies.
+  const scannable = (body || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ');
+  for (const match of scannable.matchAll(/@([^\s@,，。:：;；!！?？'"()\[\]<>|`]+)/g)) {
     const token = match[1].trim();
     const agent = (state.agents || []).find(a => a.id === token || a.name === token);
     if (agent && !found.includes(agent.id)) found.push(agent.id);

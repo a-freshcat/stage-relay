@@ -779,7 +779,13 @@ class Store:
                 else:
                     unknown.append(str(item))
         else:
-            for match in re.finditer(r"@([^\s@,，。:：;；!！?？'\"()\[\]<>|]+)", body or ""):
+            # Inline code and fenced blocks talk *about* mentions rather than
+            # making one, so they are removed before scanning. Without this, a
+            # message explaining `@codex` routing would be routed to codex — or,
+            # as happened, refused because the backtick joined the token.
+            scannable = re.sub(r"```.*?```", " ", body or "", flags=re.S)
+            scannable = re.sub(r"`[^`]*`", " ", scannable)
+            for match in re.finditer(r"@([^\s@,，。:：;；!！?？'\"()\[\]<>|`]+)", scannable):
                 token = match.group(1).strip()
                 target = known.get(token)
                 if target:
