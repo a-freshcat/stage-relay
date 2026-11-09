@@ -1,0 +1,33 @@
+0.1.5: the depth selector actually reaches the panel, and the supervisor can call a stage summary
+
+Two things the user hit on the real instance.
+
+Depth selector was invisible even on 0.1.4. Root cause was not the feature code:
+the running binary was a build made before the effort work, so `model/list` came
+back without `efforts` and the UI correctly rendered no selector. Asked the live
+panel directly and got 8 models with 0 efforts; after deploying a build that
+contains the change the same call returns 8 models with 8 effort lists. The
+deployed packages also carried a second defect that made this worse:
+
+- `Connections.entry()` and `CodexManager.connect()` compared the whole recorded
+  entry, including the bridge path. An upgrade ships a new path, so every version
+  bump looked like a revoked authorization and demanded a re-setup the user never
+  asked for. Both now compare the contract (agent, port, data store) and hand back
+  the current command when the old package is gone. A different data store is
+  still a different authorization.
+
+Stage summaries were unreachable by the role that should produce them:
+`summary_request` sat in the user-only action set, so the progress supervisor
+could never ask for one and stages ended with nothing in the rail.
+
+- The supervisor may now request a summary; a member outside that role still
+  cannot, and a supervisor who is also the reporter is told to submit directly
+  rather than message itself.
+- `relay_request_summary` exposes it over MCP, and the event records who asked so
+  the reporter's wake says the supervisor judged the stage complete.
+
+Real instance: 0.1.5 running on 4318 with the same data directory; project,
+issues, bindings and event log are unchanged (backup taken before the swap).
+Verified: 156 tests (1 skipped), node --check, ui probe, and the live catalog now
+returns efforts for all 8 models. DSH's own catalog stayed queued because its
+bound session was busy, so per-route DSH depths are still unverified.

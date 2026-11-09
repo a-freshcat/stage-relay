@@ -43,10 +43,18 @@ class Connections:
         # Keep an already-authorized bridge entry when an app update is installed
         # side by side and its prior bridge still points at this same data store.
         owned=self.owned.get(agent["id"],{}).get("entry")
-        if not getattr(sys,'frozen',False) and isinstance(owned,dict) and isinstance(owned.get("args"),list):
+        if isinstance(owned,dict) and isinstance(owned.get("args"),list):
             expected_args=["--agent",agent["id"],"--port",str(self.port),"--data-dir",str(self.data_dir)]
-            if owned["args"]==expected_args and Path(str(owned.get("command",""))).is_file():
-                return owned
+            # An upgrade ships a new bridge path, so comparing the command would
+            # invalidate a perfectly good authorization and force a re-setup on
+            # every version bump. What matters is that the entry still targets
+            # this agent, this port and this data store.
+            if owned["args"]==expected_args:
+                command=str(owned.get("command",""))
+                if Path(command).is_file():
+                    return owned
+                # The recorded bridge was removed with an old package: fall
+                # through and hand back the current one for the same contract.
         if getattr(sys, "frozen", False):
             bridge = Path(sys.executable).resolve().parent / "StageRelayBridge.exe"
             if not bridge.is_file():

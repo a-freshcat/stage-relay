@@ -139,6 +139,48 @@ class Workflows(unittest.TestCase):
             self.act("review", "codex", task_id=t["id"], approved=True, evidence="自己审核")
         self.act("accept", task_id=t["id"], approved=True, evidence="用户检查结果符合预期")
 
+    def test_supervisor_can_request_a_stage_summary(self):
+        """The role that judges a stage finished is the role that must ask."""
+        # Supervisor and reporter must be different people, otherwise the
+        # supervisor would be asking itself; that case has its own test.
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "antigravity"})
+        t = self.review_ready()
+        self.act("review", "codex", task_id=t["id"], approved=True, evidence="核验通过")
+        i = self.issue()
+        self.act("resolve", issue_id=i["id"], choice=i["options"][0]["id"])
+        # planner is codex here, so the progress supervisor can raise it.
+        self.act("summary_request", "codex")
+        project = self.project()
+        self.assertTrue(project["summary_requested"])
+        # The reporter is woken, and the request records who asked.
+        event = [e for e in self.store.inbox(project["assignments"]["reporter"])["events"]
+                 if e["kind"] == "summary_request"]
+        self.assertTrue(event)
+        self.assertEqual(event[-1]["detail"].get("requested_by"), "codex")
+        self.assertIn("阶段汇总", event[-1]["detail"].get("text", ""))
+
+    def test_a_member_cannot_request_a_summary_out_of_role(self):
+        t = self.review_ready()
+        self.act("review", "codex", task_id=t["id"], approved=True, evidence="核验通过")
+        i = self.issue()
+        self.act("resolve", issue_id=i["id"], choice=i["options"][0]["id"])
+        # deepseek is the executor, not the supervisor and not the user.
+        with self.assertRaises(Invalid):
+            self.act("summary_request", "deepseek")
+
+    def test_supervisor_who_is_also_reporter_is_told_to_submit_instead(self):
+        reporter = self.project()["assignments"]["reporter"]
+        self.act("assign", assignments={"planner": reporter, "executor": "deepseek",
+                                        "reporter": reporter})
+        t = self.review_ready()
+        self.act("review", reporter, task_id=t["id"], approved=True, evidence="核验通过")
+        i = self.issue()
+        self.act("resolve", issue_id=i["id"], choice=i["options"][0]["id"])
+        with self.assertRaises(Invalid) as raised:
+            self.act("summary_request", reporter)
+        self.assertIn("直接提交", str(raised.exception))
+
     def test_summary_waits_for_checks_and_decisions(self):
         with self.assertRaises(Invalid):
             self.act("summary_request")

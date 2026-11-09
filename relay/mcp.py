@@ -38,11 +38,12 @@ TOOLS = [
     {"name": "relay_project_message", "description": "向项目级群聊发送消息：没有议题时也能说明进度、提问或交接；只对当前项目成员可见，项目结束后只读。发消息不等于对方已运行。", "inputSchema": schema(PROJECT | {"body": STR}, ["project_id", "body"])},
     {"name": "relay_review", "description": "方案监督负责人核验其他成员的待审核板块。提供独立检查依据；不能核验自己的执行结果。分工切换后须从最新项目读取 review_epoch 并随请求提交。", "inputSchema": schema(PROJECT | {"task_id": STR, "approved": {"type": "boolean"}, "evidence": STR, "review_epoch": {"type":"integer","minimum":0}}, ["project_id", "task_id", "approved", "evidence"])},
     {"name": "relay_submit_summary", "description": "当前汇总负责人在用户派发汇总、所有板块核验通过且议题解决后，提交有依据的最终说明。", "inputSchema": schema(PROJECT | {"body": STR}, ["project_id", "body"])},
+    {"name": "relay_request_summary", "description": "进度监督在判断某个阶段完成时，请汇总负责人做一次阶段汇总。只能由当前进度监督或用户发起；若你同时是汇总负责人则会被拒绝（请直接提交汇总）。不能代替用户验收。", "inputSchema": schema(PROJECT | {"stage": STR}, ["project_id"])},
 ]
 READ_ONLY = {"relay_inbox", "relay_rules", "relay_project", "relay_task", "relay_issue", "relay_message", "relay_event", "relay_list"}
 for tool in TOOLS:
     tool['annotations']={'readOnlyHint':tool['name'] in READ_ONLY,'destructiveHint':False,'openWorldHint':False}
-ACTIONS = {"relay_report": "report", "relay_raise_issue": "issue_create", "relay_send_message": "message", "relay_project_message": "project_message", "relay_review": "review", "relay_submit_summary": "summary_submit"}
+ACTIONS = {"relay_report": "report", "relay_raise_issue": "issue_create", "relay_send_message": "message", "relay_project_message": "project_message", "relay_review": "review", "relay_submit_summary": "summary_submit", "relay_request_summary": "summary_request"}
 # Read-only tools map to their own bridge actions; none of them writes state
 # except recording the member's last-seen timestamp, as relay_inbox already did.
 READS = {"relay_rules": "rules", "relay_project": "read_project", "relay_task": "read_task",

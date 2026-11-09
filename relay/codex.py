@@ -385,7 +385,13 @@ class CodexManager:
         member=next((a for a in self.server.store.snapshot()['agents'] if a['id']==agent and a['app']=='codex'),None)
         if not member:raise Invalid('请选择 Codex 成员。')
         owned=self.server.connections.owned.get(agent,{})
-        if not member.get('setup',{}).get('configured') or owned.get('entry')!=self.server.connections.entry(member):
+        # Compare the contract, not the string: an upgrade changes the bridge path
+        # while the authorization (agent, port, data store) is still the same one
+        # the user granted. Comparing the raw dict made every version bump demand
+        # a re-authorization that had not actually been revoked.
+        recorded=owned.get('entry') or {}
+        current=self.server.connections.entry(member)
+        if not member.get('setup',{}).get('configured') or recorded.get('args')!=current.get('args'):
             raise Invalid('请先在当前面板中重新授权接入 Codex，登记对应的协作工具。')
         with self.lock:
             gate=self.connect_locks.setdefault(agent,threading.Lock())

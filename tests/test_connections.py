@@ -30,6 +30,31 @@ class ConnectionSetup(unittest.TestCase):
         path.parent.mkdir(parents=True,exist_ok=True)
         path.write_text(source,encoding="utf-8")
 
+    def test_an_upgrade_keeps_the_authorization_for_the_same_contract(self):
+        """A new package path must not look like a revoked authorization."""
+        stale = self.root / "old-package" / "StageRelayBridge.exe"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("", encoding="utf-8")
+        same_args = ["--agent", "codex", "--port", "4318", "--data-dir", str(self.root / "data")]
+        self.connections.owned = {"codex": {"entry": {"command": str(stale), "args": same_args}}}
+        # The old bridge still exists: keep the entry the user already approved.
+        self.assertEqual(self.connections.entry(self.codex)["command"], str(stale))
+        # The old package was deleted by an upgrade: the same contract still holds,
+        # so the current command is handed back instead of demanding re-setup.
+        stale.unlink()
+        entry = self.connections.entry(self.codex)
+        self.assertIn(str(self.root / "data"), " ".join(entry["args"]))
+        self.assertNotEqual(entry["command"], str(stale))
+        # A different data store is a different contract: the stale entry must not
+        # be reused just because it mentions the same agent and port.
+        other = str(self.root / "other-data")
+        self.connections.owned = {"codex": {"entry": {
+            "command": "x", "args": ["--agent", "codex", "--port", "4318",
+                                     "--data-dir", other]}}}
+        entry = self.connections.entry(self.codex)
+        self.assertNotEqual(entry["command"], "x")
+        self.assertNotIn(other, " ".join(entry["args"]))
+
     def test_prepare_does_not_write_or_require_manual_config(self):
         plan = self.connections.prepare(self.codex)
         self.assertFalse((self.home / ".codex").exists())

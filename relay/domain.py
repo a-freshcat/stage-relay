@@ -289,7 +289,11 @@ class Store:
         return result
 
     def _apply(self, db, state, action, a, actor):
-        user_actions = {"project_create", "workspace_set", "demo_create", "demo_reset", "setup_record", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "summary_request", "invite", "project_close", "record_archive", "record_restore", "project_forget", "project_restore"}
+        # `summary_request` is deliberately not user-only: the progress supervisor
+        # judges when a stage is done, and a summary nobody can ask for is a
+        # summary nobody gets. The handler still checks the role and refuses when
+        # the supervisor is itself the reporter.
+        user_actions = {"project_create", "workspace_set", "demo_create", "demo_reset", "setup_record", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "invite", "project_close", "record_archive", "record_restore", "project_forget", "project_restore"}
         if action in user_actions and actor != "user":
             raise Invalid("这项操作由用户决定。")
         if action == "setup_record":
@@ -651,12 +655,23 @@ class Store:
             result = issue
         elif action == "summary_request":
             self._ready(p)
+            reporter = p["assignments"]["reporter"]
+            # The user may always ask. Otherwise only the progress supervisor may,
+            # because that is the role that judges a stage finished — and asking
+            # yourself is meaningless, since the reporter is who has to answer.
+            if actor != "user":
+                if actor != p["assignments"]["planner"]:
+                    raise Invalid("只有用户或当前进度监督可以请求阶段汇总。")
+                if actor == reporter:
+                    raise Invalid("你同时是汇总负责人，不需要向自己请求汇总；请直接提交。")
             if p["paused"]:
                 raise Invalid("请先恢复派发。")
             if p["summary_requested"]:
                 raise Invalid("已请求汇总，请等待负责人响应。")
             p["summary_requested"] = True
-            detail.update(text="请整理方案、执行、核验与未完成事项", recipients=[p["assignments"]["reporter"]])
+            detail.update(text=("请整理方案、执行、核验与未完成事项" if actor == "user"
+                                else f"进度监督判断本阶段完成，请整理阶段汇总"),
+                          requested_by=actor, recipients=[reporter])
         elif action == "summary_submit":
             if actor != p["assignments"]["reporter"]:
                 raise Invalid("只有当前汇总负责人可提交汇总。")
