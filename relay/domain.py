@@ -109,6 +109,9 @@ class Store:
             # Unread user mentions are per project and per issue; the panel needs
             # to see "0" rather than "this build cannot track them".
             project.setdefault("user_mentions", [])
+            # Follow-up reports are requested by hand, so the panel must be able to
+            # show "还没有任何跟进汇报" instead of guessing from a missing key.
+            project.setdefault("reports", [])
             project.setdefault("closed", False)
             project.setdefault("closed_at", None)
             project.setdefault("retention_days", None)
@@ -341,7 +344,7 @@ class Store:
         # judges when a stage is done, and a summary nobody can ask for is a
         # summary nobody gets. The handler still checks the role and refuses when
         # the supervisor is itself the reporter.
-        user_actions = {"project_create", "workspace_set", "demo_create", "demo_reset", "setup_record", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "invite", "project_close", "record_archive", "record_restore", "project_forget", "project_restore"}
+        user_actions = {"project_create", "workspace_set", "demo_create", "demo_reset", "setup_record", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "invite", "project_close", "record_archive", "record_restore", "project_forget", "project_restore", "report_request"}
         if action in user_actions and actor != "user":
             raise Invalid("这项操作由用户决定。")
         if action == "setup_record":
@@ -731,6 +734,43 @@ class Store:
                     t["status"] = t.pop("before_block", "queued" if t["dispatched"] else "todo")
             detail.update(text=note, issue_id=issue["id"], recipients=issue["members"])
             result = issue
+        elif action == "report_request":
+            # A follow-up report is asked for by hand, so it must work while the
+            # project is still running — that is the whole point of "上次汇报以来".
+            # Only the reporter is woken; naming the user or the supervisor here
+            # would multiply turns for something one member writes.
+            reporter = p["assignments"]["reporter"]
+            if p["closed"]:
+                raise Invalid("项目已结束，只能查看历史汇报。")
+            if p["paused"]:
+                raise Invalid("请先恢复派发。")
+            client_id = text(a.get("request_id"), "汇报请求号", 120) or ""
+            if not client_id:
+                raise Invalid("缺少汇报请求号，面板会重试。")
+            existing = next((r for r in p.setdefault("reports", [])
+                             if r.get("request_id") == client_id), None)
+            if existing:
+                # A double click or a retried POST must land on the same record,
+                # not queue a second wake for the reporter. The event still needs
+                # its own text and an empty audience: an event without recipients
+                # would broadcast to the whole project and wake everyone up.
+                detail = None  # a duplicate is not an event; it must not wake anyone
+                result = existing
+            else:
+                entry = {"id": uid("report"), "request_id": client_id,
+                         "requested_by": actor, "requested": now(),
+                         "status": "queued", "body": "", "submitted": None,
+                         "actor": None, "covered_to": (db.execute('SELECT COALESCE(MAX(seq),0) FROM events WHERE project=?',(p["id"],)).fetchone()[0]),
+                         "error": ""}
+                p["reports"].append(entry)
+                # The reporter submits with the request id, so it has to be in the
+                # wake text: a report_id alone would leave them unable to answer.
+                detail.update(text=(f"{actor} 请求生成项目跟进汇报（请求号 {client_id}）"
+                                    if actor == "user"
+                                    else f"请生成项目跟进汇报（请求号 {client_id}）：覆盖上次汇报以来的改动、验证与部署状态、阻碍与下一步建议"),
+                              report_id=entry["id"], request_id=client_id,
+                              requested_by=actor, recipients=[reporter])
+                result = entry
         elif action == "summary_request":
             reporter = p["assignments"]["reporter"]
             # The user may always ask. Otherwise only the progress supervisor may,
@@ -783,6 +823,48 @@ class Store:
                 detail.update(text=("请整理方案、执行、核验与未完成事项" if actor == "user"
                                     else f"进度监督判断本阶段完成，请整理阶段汇总"),
                               requested_by=actor, recipients=[reporter])
+        elif action == "report_submit":
+            # Only the reporter writes the report, and only against a request the
+            # panel actually made. Everything else is a client bug worth refusing.
+            if actor != p["assignments"]["reporter"]:
+                raise Invalid("只有当前汇总负责人可以提交跟进汇报。")
+            request_id = text(a.get("request_id"), "汇报请求号", 120) or ""
+            entry = next((r for r in p.setdefault("reports", [])
+                          if r.get("request_id") == request_id), None)
+            if not entry:
+                raise Invalid("找不到这条汇报请求，请刷新后重试。")
+            if entry.get("submitted"):
+                # A retried submit keeps the first body: the record is the report,
+                # and no second event is written — an event without recipients
+                # reads as "everyone", which would wake the whole project.
+                detail = None
+                result = entry
+            else:
+                entry.update(body=text(a.get("body"), "跟进汇报", 40000),
+                             status="submitted", submitted=now(), actor=actor,
+                             error="",
+                             covered_to=(db.execute('SELECT COALESCE(MAX(seq),0) '
+                                                    'FROM events WHERE project=?',
+                                                    (p["id"],)).fetchone()[0]))
+                detail.update(text="跟进汇报已生成", report_id=entry["id"],
+                              recipients=[])
+                result = entry
+        elif action == "report_fail":
+            reporter = p["assignments"]["reporter"]
+            if actor != reporter and actor != "user":
+                raise Invalid("只有汇总负责人或用户可标记汇报失败。")
+            request_id = text(a.get("request_id"), "汇报请求号", 120) or ""
+            entry = next((r for r in p.setdefault("reports", [])
+                          if r.get("request_id") == request_id), None)
+            if not entry:
+                raise Invalid("找不到这条汇报请求，请刷新后重试。")
+            if not entry.get("submitted"):
+                entry.update(status="failed", error=text(a.get("error"), "失败原因", 2000))
+                detail.update(text="生成跟进汇报失败，可重试", report_id=entry["id"],
+                              recipients=["user"])
+                result = entry
+            else:
+                result = entry
         elif action == "summary_submit":
             if actor != p["assignments"]["reporter"]:
                 raise Invalid("只有当前汇总负责人可提交汇总。")
@@ -842,7 +924,10 @@ class Store:
                 result = p["summary"]
         else:
             raise Invalid("不支持的操作。")
-        self._event(db, p["id"], action, actor, detail)
+        if detail is not None:
+            # A duplicate request or a retried submit rewrites the same record and
+            # writes no event: repeating a call must not become a second wake.
+            self._event(db, p["id"], action, actor, detail)
         return result
 
     def _addresses_user(self, state, body, explicit):

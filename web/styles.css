@@ -28,4 +28,12 @@ dialog{border:1px solid #d9dfd8;background:#fcfcfa;border-radius:14px;padding:0;
 .storage-list{display:flex;flex-direction:column;gap:6px;margin:8px 0}
 .storage-row{display:flex;gap:8px;align-items:center;border:1px solid #e6e8e7;border-radius:8px;padding:8px 10px;background:#fff}
 .storage-size{font-variant-numeric:tabular-nums;font-size:11px;color:#46524e}
+/* Follow-up report block on the reporter's card, and its history modal. */
+.report-entry{border-top:1px solid var(--line,#e6e6e6);margin-top:10px;padding-top:10px}
+.report-head{display:flex;gap:6px;align-items:center;margin-bottom:6px}
+.report-note{font-size:12px;line-height:1.6;color:var(--muted,#6b6b6b);margin-bottom:8px;word-break:break-word}
+.report-actions{display:flex;gap:8px;flex-wrap:wrap}
+.report-item{border:1px solid var(--line,#e6e6e6);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+.report-item .row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.report-body{white-space:pre-wrap;word-break:break-word;font:inherit;font-size:13px;line-height:1.7;margin:0;max-height:44vh;overflow:auto}
 .mention-dot{border:0;background:#c0392b;color:#fff;font-size:10px;min-width:18px;height:18px;border-radius:20px;display:grid;place-items:center;padding:0 5px;font-weight:650;cursor:pointer}.mention-dot:hover{background:#96291e}.nav .count.mention{background:#c0392b;color:#fff}.issue-card.has-mention{border-color:#e2b1aa;background:#fdf7f6}.mention-tag{font-size:9px;color:#a4362a;background:#fbe9e6;border:1px solid #f0cdc7;border-radius:4px;padding:1px 5px;white-space:nowrap}.message.mentions-user .message-text{background:#fdf3f1;box-shadow:inset 2px 0 0 #c0392b}.message.mentions-user.mention-flash .message-text{animation:mention-flash 1.4s ease-out}@keyframes mention-flash{0%{background:#fbd9d3}100%{background:#fdf3f1}}

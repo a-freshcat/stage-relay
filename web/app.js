@@ -223,8 +223,32 @@ function bindNative(agentId) {
 function cards(p) {
   return `<div class="member-grid">${Object.entries(roles).map(([role,label]) => {
     const a = member(p.assignments[role]);
-    return `<article class="member-card"><div class="row">${appIcon(a.id)}<div class="grow"><div class="member-name" title="${esc(a.name)}">${esc(a.name)}</div><div class="member-role">${label}</div></div></div><div class="app-caption">工作应用：${esc(apps[a.app].name)}</div>${roleStatus(p,role)}<div class="native-binding">${nativeInfo(p,a)}${btn('bind-native','绑定原生会话','link','ghost',`data-agent="${a.id}"`)}</div><div class="member-footer">${presence(a)}${btn('connect','接入','link','ghost',`data-agent="${a.id}"`)}</div></article>`;
+    const followUp = role === 'reporter' ? reportCard(p) : '';
+    return `<article class="member-card"><div class="row">${appIcon(a.id)}<div class="grow"><div class="member-name" title="${esc(a.name)}">${esc(a.name)}</div><div class="member-role">${label}</div></div></div><div class="app-caption">工作应用：${esc(apps[a.app].name)}</div>${roleStatus(p,role)}<div class="native-binding">${nativeInfo(p,a)}${btn('bind-native','绑定原生会话','link','ghost',`data-agent="${a.id}"`)}</div>${followUp}<div class="member-footer">${presence(a)}${btn('connect','接入','link','ghost',`data-agent="${a.id}"`)}</div></article>`;
   }).join('')}</div>`;
+}
+// The follow-up report lives on the reporter's card, because that is the member
+// who writes it. Everything the panel shows about it comes from the server record:
+// the button only ever asks, it never claims a report exists.
+function reportCard(p) {
+  const list = p.reports || [];
+  const latest = list[list.length - 1];
+  const running = latest && (latest.status === 'queued' || latest.status === 'generating');
+  const tone = !latest ? '' : latest.status === 'submitted' ? 'green'
+    : latest.status === 'failed' ? 'red' : 'blue';
+  const label = !latest ? '还没有跟进汇报'
+    : latest.status === 'submitted' ? '已完成 · ' + datetime(latest.submitted)
+    : latest.status === 'failed' ? '生成失败，可重试'
+    : '等待汇总负责人生成';
+  const offline = (state.runtime?.hosts || []).find(h => h.agent === p.assignments.reporter);
+  const note = !latest ? '随时可以让汇总负责人按当前进展写一份，不必等项目全部完成。'
+    : latest.status === 'failed' ? (latest.error || '原因未记录') + '。可再次点击生成。'
+    : latest.status === 'submitted' ? '上次汇报以来的改动、验证与部署状态都在正文里。'
+    : (offline && offline.online === false ? '汇总负责人当前不在线，请求已排队，接入后生成。'
+      : '请求已进入汇总负责人信箱，应用读取后生成。');
+  return `<div class="report-entry"><div class="report-head">${badge(label, tone, latest?.status === 'submitted' ? 'check' : 'clock')}</div>
+    <div class="report-note">${esc(note)}</div>
+    <div class="report-actions">${btn('report-generate','生成跟进汇报','plus','ghost', running ? 'disabled' : '')}${btn('report-history','查看历史','layers','ghost', list.length ? '' : 'disabled')}</div></div>`;
 }
 function progress(p) {
   let stage = p.summary ? 3 : p.tasks.length && p.tasks.every(t => t.status === 'done') ? 3 : p.tasks.length && p.tasks.every(t => ['review','done'].includes(t.status)) ? 2 : p.tasks.some(t => t.dispatched) ? 1 : 0;
@@ -704,6 +728,15 @@ function openStage(stageId) {
   if (!s) return toast('找不到这条阶段汇总，请刷新。', true);
   openModal(`阶段汇总 · ${s.title || '已验收板块'}`, `<div class="small muted">第 ${s.revision} 版 · 涉及 ${(s.task_ids || []).length} 个板块</div>${stageMeta(s)}${stageBody(s)}`);
 }
+// All reports for this project, oldest first, with the text each one carried.
+function openReports() {
+  const p = current();
+  const list = (p?.reports || []);
+  const rows = list.map(r => `<article class="report-item"><div class="row"><strong>${esc(r.requested_by === 'user' ? '我' : name(r.requested_by))} 请求 · ${datetime(r.requested)}</strong>${badge(r.status === 'submitted' ? '已完成' : r.status, r.status === 'submitted' ? 'green' : 'blue')}</div>
+    <div class="report-note">${esc(r.status === 'submitted' ? '提交 ' + datetime(r.submitted) + ' · 覆盖到事件 #' + (r.covered_to ?? '—') : (r.status === 'failed' ? (r.error || '生成失败') : '尚未生成'))}</div>
+    ${r.body ? `<pre class="report-body">${esc(r.body)}</pre>` : ''}</article>`).join('');
+  openModal('跟进汇报历史', list.length ? rows : '<p class="empty">还没有生成过跟进汇报。</p>' + '');
+}
 function openStages() {
   const p = current();
   const stages = p.stages || [];
@@ -748,6 +781,18 @@ const actions = {
   'invite':el => invite(el.dataset.issue), 'supplement':el => supplement(el.dataset.issue),
   'connect':el => connect(el.dataset.agent), 'disconnect':el => connect(el.dataset.agent,true), 'authorize-connect':authorizeConnect, 'pause':pause,
   'open-issue':el => openIssue(el.dataset.issue), 'open-issue-mention':el => openMention(el.dataset.issue), 'open-project-chat':openProjectChat, 'close-chat':() => {ui.chat=false;saveChat();render();},
+  'report-generate':async () => {
+    const p = current();
+    if (!p) return;
+    // A persistent request id is what makes a double click or a retried POST land
+    // on one record instead of queueing a second wake for the reporter.
+    const id = 'report-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8);
+    try {
+      await mutate('report_request', {request_id: id});
+      toast('已请汇总负责人生成跟进汇报。');
+    } catch (error) { toast(error.message, true); }
+  },
+  'report-history':() => openReports(),
   'close-modal':closeModal,
   'nav':el => {ui.page=el.dataset.page;render();if ($('.canvas')) $('.canvas').scrollTop=0;if (ui.page === 'settings' && !ui.storage) refreshStorage().catch(error => toast(error.message,true));},
   'deliveries':() => {ui.page='deliveries';render();},

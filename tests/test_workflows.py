@@ -313,6 +313,73 @@ class Workflows(unittest.TestCase):
         self.act("message", "user", issue_id=i["id"], body="@user 提醒我自己")
         self.assertEqual(self.project()["mention_total"], 0)
 
+    def test_a_follow_up_report_wakes_only_the_reporter_and_is_deduplicated(self):
+        """The panel asks by hand; one request must not become two wakes."""
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        first = self.act("report_request", actor="user", request_id="req-1")
+        self.assertEqual(first["status"], "queued")
+        self.assertEqual(first["requested_by"], "user")
+
+        wake = [e for e in self.store.inbox("codex", full=True)["events"]
+                if e["detail"].get("report_id") == first["id"]]
+        self.assertEqual(wake[-1]["detail"]["recipients"], ["codex"], wake[-1])
+        # The reporter can only answer if the wake names the request it is for.
+        self.assertIn("req-1", wake[-1]["detail"]["text"], wake[-1])
+        self.assertEqual(wake[-1]["detail"]["request_id"], "req-1")
+        # Nobody else is woken: the report is one member's work.
+        for other in ("deepseek",):
+            seen = [e for e in self.store.inbox(other, full=True)["events"]
+                    if e["detail"].get("report_id") == first["id"]]
+            self.assertEqual(seen, [], other)
+
+        again = self.act("report_request", actor="user", request_id="req-1")
+        self.assertEqual(again["id"], first["id"])
+        self.assertEqual(len(self.project()["reports"]), 1)
+        # A duplicate call writes no event at all: an event with no recipients
+        # reads as "everyone" and would wake the whole project.
+        events = [e for e in self.store.inbox("codex", full=True)["events"]
+                  if e["detail"].get("report_id") == first["id"]
+                  and e["detail"].get("requested_by") is not None]
+        self.assertEqual(len(events), 1, events)
+
+    def test_a_report_can_be_submitted_while_work_is_still_open(self):
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        self.task()  # a board still in progress
+        req = self.act("report_request", actor="user", request_id="req-2")
+        # A stage summary would be refused here; a follow-up report must not be.
+        out = self.act("report_submit", actor="codex", request_id="req-2",
+                       body="上次汇报以来：改了 A；未改 B；验证 pytest 通过；未部署。建议：优先补 C。")
+        self.assertEqual(out["status"], "submitted")
+        self.assertTrue(out["submitted"])
+        self.assertEqual(out["covered_to"], out["covered_to"])
+
+    def test_a_failed_report_is_retryable_and_keeps_the_first_body(self):
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        self.act("report_request", actor="user", request_id="req-3")
+        failed = self.act("report_fail", actor="codex", request_id="req-3",
+                          error="模型离线")
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["error"], "模型离线")
+        done = self.act("report_submit", actor="codex", request_id="req-3", body="第一次正文")
+        self.assertEqual(done["status"], "submitted")
+        # A retried submit must not replace the record that already exists.
+        retried = self.act("report_submit", actor="codex", request_id="req-3", body="第二次正文")
+        self.assertEqual(retried["body"], "第一次正文")
+
+    def test_only_the_reporter_may_write_the_report(self):
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        self.act("report_request", actor="user", request_id="req-4")
+        with self.assertRaises(Invalid):
+            self.act("report_submit", actor="deepseek", request_id="req-4", body="越权")
+        # Closed projects stay readable but take no new requests.
+        self.act("project_close", retention_days=1)
+        with self.assertRaises(Invalid):
+            self.act("report_request", actor="user", request_id="req-5")
+
     def test_prose_about_a_symbol_is_not_an_unknown_addressee(self):
         """Explaining the badge must not be refused as a mistyped name.
 

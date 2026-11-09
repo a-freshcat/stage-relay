@@ -59,7 +59,7 @@ const FileReader = class { readAsDataURL() { this.onerror?.(new Error('unused'))
 `;
 
 const epilogue = `
-globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, decisions, openStage, openStages, render, renderKey, actions, comparableState, issueCard, issuesPage, mentionCount, settleMentions, openMention};
+globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, decisions, openStage, openStages, render, renderKey, actions, comparableState, issueCard, issuesPage, mentionCount, settleMentions, openMention, reportCard, openReports, cards};
 export {};
 `;
 
@@ -455,6 +455,35 @@ await (async () => {
   const keyup = probe.listeners.get('keyup');
   check('键盘翻页也触发判定', typeof keyup === 'function');
   probe.ui.chat = null;
+})();
+
+// The follow-up report entry sits on the reporter's card only, and its wording
+// must come from the server record rather than assuming a report exists.
+await (async () => {
+  const proj = mentionProject;
+  proj.assignments = {planner: 'codex', executor: 'deepseek', reporter: 'codex'};
+  proj.reports = [];
+  let html = probe.reportCard(proj);
+  check('无汇报时说明可以随时生成', /还没有跟进汇报/.test(html) && /生成跟进汇报/.test(html));
+  check('无历史时查看历史不可点', /data-action="report-history"\s+disabled/.test(html));
+
+  proj.reports = [{id:'report_1', request_id:'r1', status:'queued', requested:'2026-11-09T18:00:00+00:00', body:''}];
+  html = probe.reportCard(proj);
+  check('排队中禁止连点', /data-action="report-generate"\s+disabled/.test(html) && /等待汇总负责人生成/.test(html));
+
+  proj.reports = [{id:'report_2', request_id:'r2', status:'failed', error:'模型离线', requested:'2026-11-09T18:00:00+00:00', body:''}];
+  html = probe.reportCard(proj);
+  check('失败显示原因并可重试', /生成失败，可重试/.test(html) && /模型离线/.test(html) && !/data-action="report-generate"\s+disabled/.test(html));
+
+  proj.reports = [{id:'report_3', request_id:'r3', status:'submitted', requested:'x', submitted:'2026-11-09T18:10:00+00:00', covered_to: 431, body:'上次汇报以来：改 A；未改 B。'}];
+  html = probe.reportCard(proj);
+  check('已完成显示时间', /已完成/.test(html));
+  check('查看历史可点', !/data-action="report-history"\s+disabled/.test(html));
+
+  // Only the reporter card carries the block.
+  const all = probe.cards(proj);
+  check('提醒块只出现在成果汇总卡', (all.match(/report-entry/g) || []).length === 1);
+
 })();
 
 console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL UI CHECKS PASSED');

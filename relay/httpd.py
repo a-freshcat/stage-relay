@@ -28,7 +28,7 @@ from .codex import CodexManager, NativeError
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
-USER_ACTIONS = {"project_create", "workspace_set", "demo_create", "demo_reset", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "summary_request", "invite", "issue_create", "message", "project_message", "project_close", "record_archive", "record_restore", "project_forget", "project_restore", "mentions_read"}
+USER_ACTIONS = {"project_create", "workspace_set", "demo_create", "demo_reset", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "summary_request", "invite", "issue_create", "message", "project_message", "project_close", "record_archive", "record_restore", "project_forget", "project_restore", "mentions_read", "report_request", "report_fail"}
 SETTINGS_KINDS = {
     # Only these app-level leftovers may ever be listed for cleanup, and only
     # after the referenced project is gone. Sessions and credentials are not here.
@@ -42,7 +42,10 @@ SETTINGS_KINDS = {
 # the role: user, or the current planner. Without it the MCP tool was
 # unreachable even though everything behind it was implemented.
 AGENT_ACTIONS = {"connect", "report", "review", "issue_create", "message", "project_message",
-                 "summary_submit", "summary_request"}
+                 "summary_submit", "summary_request",
+                 # The reporter writes the follow-up report, so these are member
+                 # actions by nature; the role check lives in the store.
+                 "report_submit", "report_fail"}
 
 
 class PanelServer(ThreadingHTTPServer):
