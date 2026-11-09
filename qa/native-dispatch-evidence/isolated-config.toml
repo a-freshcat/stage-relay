@@ -1,0 +1,8 @@
+
+
+# BEGIN Stage Relay: codex
+[mcp_servers.stage-relay-codex]
+command = "C:\\Users\\handsomeboys\\Documents\\ChatGPT\\new_subagent\\release\\StageRelay-0.1.4-report\\Stage Relay\\StageRelayBridge.exe"
+args = ["--agent", "codex", "--port", "4443", "--data-dir", "C:\\Users\\handsomeboys\\Documents\\ChatGPT\\new_subagent\\qa\\native-dispatch\\data"]
+enabled = true
+# END Stage Relay: codex
