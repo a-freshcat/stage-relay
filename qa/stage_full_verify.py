@@ -18,7 +18,9 @@ from pathlib import Path
 VERSION = sys.argv[3] if len(sys.argv) > 3 else "0.1.10"
 
 ROOT = Path(__file__).resolve().parent.parent
-BRIDGE = ROOT / f"release/StageRelay-{VERSION}/Stage Relay/StageRelayBridge.exe"
+# The build directory can carry a timestamp suffix, so let the caller name it.
+BUILD = sys.argv[4] if len(sys.argv) > 4 else f"StageRelay-{VERSION}"
+BRIDGE = ROOT / f"release/{BUILD}/Stage Relay/StageRelayBridge.exe"
 BASE = sys.argv[1]
 DATA = Path(sys.argv[2])
 PORT = BASE.rsplit(":", 1)[1]
