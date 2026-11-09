@@ -507,7 +507,7 @@ class Runtime:
                     if kind=='record_restore':
                         advanced=seq
                         continue
-                    if agent not in detail.get('recipients',[]) or actor==agent or kind not in {'task_queued','message','project_message','issue_create','resolve','review','report','accept','summary_request','assign','invite','pause'}:
+                    if agent not in detail.get('recipients',[]) or actor==agent or kind not in {'task_queued','message','project_message','issue_create','resolve','review','report','accept','summary_request','report_request','assign','invite','pause'}:
                         advanced=seq
                         continue
                     if kind=='task_queued' and any(t['id']==detail.get('task_id') and t.get('archived') for t in p['tasks']):

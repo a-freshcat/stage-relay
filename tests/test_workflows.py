@@ -343,6 +343,19 @@ class Workflows(unittest.TestCase):
                   and e["detail"].get("requested_by") is not None]
         self.assertEqual(len(events), 1, events)
 
+    def test_the_panel_button_alone_wakes_the_reporter(self):
+        """The wake whitelist must include the request, or the button does nothing.
+
+        A report request is useless if polling never turns it into a delivery: the
+        record would sit at "queued" forever while the reporter never learns of it.
+        """
+        source = Path(__file__).resolve().parent.parent / "relay" / "runtime.py"
+        text = source.read_text(encoding="utf-8")
+        window = text[text.index("kind not in {"):]
+        allowed = window[:window.index("}")]
+        for kind in ("report_request", "summary_request", "message"):
+            self.assertIn("'%s'" % kind, allowed, allowed)
+
     def test_a_report_can_be_submitted_while_work_is_still_open(self):
         self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
                                         "reporter": "codex"})
