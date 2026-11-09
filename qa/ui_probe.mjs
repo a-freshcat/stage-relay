@@ -58,7 +58,7 @@ const FileReader = class { readAsDataURL() { this.onerror?.(new Error('unused'))
 `;
 
 const epilogue = `
-globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField};
+globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, resolveMentions};
 export {};
 `;
 
@@ -239,6 +239,13 @@ check('提供断开本面板连接', writerHtml.includes('断开本面板 Codex 
 check('不要求用户删锁或关共享应用', !/(请|你需要|建议)[^。]{0,12}(删锁|删除锁|关闭桌面端 Codex)/.test(writerHtml));
 rtState.codexNative = [];
 rtState.runtime.bindings = [];
+
+// Mention routing: naming one member must resolve to that member's id, and must
+// not silently resolve to everyone (the user's complaint about @Codex waking all).
+check('@ 解析为真实成员 id', JSON.stringify(probe.resolveMentions('@codex 请看这条')) === '["codex"]');
+check('@ 多个成员取并集', JSON.stringify(probe.resolveMentions('@codex @deepseek 一起看')) === '["codex","deepseek"]');
+check('没有 @ 时不发送 mentions', probe.resolveMentions('大家都看一下').length === 0);
+check('@ 无关名字不产生 mentions', probe.resolveMentions('@nobody 这是谁').length === 0);
 
 console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL UI CHECKS PASSED');
 process.exit(failures.length ? 1 : 0);

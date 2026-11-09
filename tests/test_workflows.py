@@ -139,6 +139,67 @@ class Workflows(unittest.TestCase):
             self.act("review", "codex", task_id=t["id"], approved=True, evidence="自己审核")
         self.act("accept", task_id=t["id"], approved=True, evidence="用户检查结果符合预期")
 
+    def test_naming_one_member_does_not_wake_everyone(self):
+        """The user's complaint: @Codex must not put the whole team to work."""
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()
+        self.act("message", "user", issue_id=i["id"], body="@codex 只看这一条")
+        latest = [e for e in self.store.inbox("deepseek")["events"]
+                  if e["kind"] == "message" and e["detail"].get("issue_id") == i["id"]]
+        self.assertFalse(latest, "a message addressed to codex must not notify deepseek")
+        targeted = [e for e in self.store.inbox("codex")["events"]
+                    if e["kind"] == "message" and e["detail"].get("issue_id") == i["id"]]
+        self.assertTrue(targeted)
+        self.assertEqual(targeted[-1]["detail"]["recipients"], ["codex"])
+
+    def test_no_mention_still_addresses_the_whole_thread(self):
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()
+        self.act("message", "user", issue_id=i["id"], body="大家都看一下这条")
+        self.assertTrue([e for e in self.store.inbox("deepseek")["events"]
+                         if e["kind"] == "message" and e["detail"].get("issue_id") == i["id"]])
+
+    def test_an_unknown_mention_is_reported_instead_of_broadcast(self):
+        i = self.issue()
+        with self.assertRaises(Invalid) as raised:
+            self.act("message", "user", issue_id=i["id"], body="@nobody 这条该给谁")
+        self.assertIn("无法识别", str(raised.exception))
+
+    def test_stage_summary_covers_one_issue_while_the_project_is_unfinished(self):
+        # One board is done and reviewed; an unrelated board stays open, so a
+        # project-wide summary must still be refused while the stage is not.
+        done = self.review_ready()
+        self.act("review", "codex", task_id=done["id"], approved=True, evidence="核验通过")
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "antigravity"})
+        later = self.act("task_create", title="后续板块", acceptance="待做", owner="deepseek")
+        self.act("dispatch", project_id=self.project()["id"])
+        with self.assertRaises(Invalid):
+            self.act("summary_request", "codex")
+        # A discussion issue with no boards is a stage of its own once resolved.
+        i = self.issue()
+        self.act("resolve", issue_id=i["id"], choice=i["options"][0]["id"])
+        stage = self.act("summary_request", "codex", issue_id=i["id"])
+        self.assertEqual(stage["status"], "requested")
+        self.assertEqual(stage["revision"], 1)
+        submitted = self.act("summary_submit", "antigravity",
+                             stage_id=stage["id"], body="阶段完成说明")
+        self.assertEqual(submitted["status"], "submitted")
+        # The same revision is only accepted once.
+        with self.assertRaises(Invalid):
+            self.act("summary_submit", "antigravity", stage_id=stage["id"], body="重复提交")
+
+    def test_stage_summary_waits_for_its_own_boards(self):
+        task = self.dispatched()
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "antigravity"})
+        i = self.issue(task_ids=[task["id"]])
+        with self.assertRaises(Invalid) as raised:
+            self.act("summary_request", "codex", issue_id=i["id"])
+        self.assertIn("未验收", str(raised.exception))
+
     def test_supervisor_can_request_a_stage_summary(self):
         """The role that judges a stage finished is the role that must ask."""
         # Supervisor and reporter must be different people, otherwise the

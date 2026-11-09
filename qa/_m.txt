@@ -1,0 +1,37 @@
+0.1.6: an @ addresses only the member it names, and a stage can be summarised on its own
+
+Two requests from the user, both real defects.
+
+Mention routing. `message` and `project_message` set recipients to the whole
+thread unconditionally, so writing "@Codex" woke every member — the user saw the
+whole team act on a message addressed to one of them. Event 190 is the evidence:
+the body names codex and the recipients were [codex, deepseek].
+
+- The server now resolves mentions itself and an explicit mention wins. With no
+  mention the thread is addressed as before. A client that sends its own recipient
+  list cannot widen the audience because the server decides.
+- Structured `mentions` are preferred; a name written in the text is accepted for
+  callers that can only send text. A name that matches no member is refused with
+  a clear message instead of silently falling back to a broadcast — that fallback
+  is what made a typo indistinguishable from a broadcast.
+- The front end resolves `@token` against real member ids before sending, and the
+  event records both `mentions` and any `unrecognized_mentions`.
+- A merged wake re-checks each absorbed event against the job's member, so an
+  event cannot ride along on a head and reach someone it was not addressed to.
+
+Stage summaries. `summary_request` and `summary_submit` both required the whole
+project to be finished, so a stage summary could only ever appear at the very end.
+
+- `summary_request` accepts an issue id: the scope is that issue plus the boards
+  it lists, and it is served while the rest of the project is still moving. The
+  project-wide path keeps the strict original gate.
+- Each request becomes a durable stage entry with a revision, so the same
+  revision is submitted once and a rework produces a new revision to summarise.
+- `relay_request_summary` and `relay_stage_summary` expose both halves; the stage
+  list is shown in the decision rail next to the final summary.
+
+Verified: 161 tests (1 skipped), node --check, ui probe with mention-routing and
+depth assertions, and a live run on the deployed instance where the recorded
+recipients for "@codex" are exactly ["codex"] and an unknown mention is refused.
+The real project, its bindings and its chat are unchanged; the fixture project
+used for that check was closed and recycled through the normal flow.

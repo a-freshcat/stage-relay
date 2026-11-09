@@ -222,13 +222,20 @@ class Runtime:
             if cut != -1:
                 base = base[:cut]
             body['prompt_base'] = base
+        agent = ((body.get('brief') or {}).get('member')) or body.get('member') or body.get('agent')
         lines = []
         for seq in merged_seqs:
             found = db.execute('SELECT kind,actor,body FROM events WHERE seq=?', (seq,)).fetchone()
             if not found:
                 continue
+            detail = json.loads(found[2])
+            # A merged event must still address this member. Without this an event
+            # carrying someone else's recipients could ride along on the head and
+            # make a member act on a message it was never addressed in.
+            if agent and detail.get('recipients') and agent not in detail['recipients']:
+                continue
             lines.append(json.dumps({'seq': seq, 'kind': found[0], 'actor': found[1],
-                                     'detail': brief.trimmed(json.loads(found[2]))}, ensure_ascii=False))
+                                     'detail': brief.trimmed(detail)}, ensure_ascii=False))
         if not lines:
             body['merged_events'] = []
             body['prompt'] = base

@@ -7,6 +7,7 @@ until its assigned application explicitly acknowledges it through the bridge.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import sqlite3
 from contextlib import contextmanager
@@ -604,7 +605,15 @@ class Store:
             clean = self._attachments(attachments)
             message = {"id": uid("message"), "actor": actor, "body": body, "created": now(), "attachments": clean}
             issue["messages"].append(message)
-            detail.update(text=body[:300], issue_id=issue["id"], message_id=message["id"], recipients=[m for m in issue["members"] if m != actor])
+            addressed, unknown = self._mentions(
+                state, body, [m for m in issue["members"] if m != actor], a.get("mentions"))
+            detail.update(text=body[:300], issue_id=issue["id"], message_id=message["id"],
+                          recipients=addressed if addressed is not None
+                          else [m for m in issue["members"] if m != actor])
+            if addressed is not None:
+                detail["mentions"] = addressed
+            if unknown:
+                detail["unrecognized_mentions"] = unknown
             result = message
         elif action == "project_message":
             # Project-level chat exists independently of any issue, so a project
@@ -624,7 +633,15 @@ class Store:
                     raise Invalid("等待用户回复后再继续发言，避免成员之间无限互发。")
             message = {"id": uid("message"), "actor": actor, "body": body, "created": now(), "attachments": clean}
             p["chat"].append(message)
-            detail.update(text=body[:300], message_id=message["id"], recipients=[m for m in sorted(members) if m != actor], thread="project")
+            addressed, unknown = self._mentions(
+                state, body, [m for m in sorted(members) if m != actor], a.get("mentions"))
+            detail.update(text=body[:300], message_id=message["id"], thread="project",
+                          recipients=addressed if addressed is not None
+                          else [m for m in sorted(members) if m != actor])
+            if addressed is not None:
+                detail["mentions"] = addressed
+            if unknown:
+                detail["unrecognized_mentions"] = unknown
             result = message
         elif action == "invite":
             issue = get(p["issues"], a.get("issue_id"), "议题")
@@ -654,7 +671,6 @@ class Store:
             detail.update(text=note, issue_id=issue["id"], recipients=issue["members"])
             result = issue
         elif action == "summary_request":
-            self._ready(p)
             reporter = p["assignments"]["reporter"]
             # The user may always ask. Otherwise only the progress supervisor may,
             # because that is the role that judges a stage finished — and asking
@@ -666,25 +682,109 @@ class Store:
                     raise Invalid("你同时是汇总负责人，不需要向自己请求汇总；请直接提交。")
             if p["paused"]:
                 raise Invalid("请先恢复派发。")
-            if p["summary_requested"]:
-                raise Invalid("已请求汇总，请等待负责人响应。")
-            p["summary_requested"] = True
-            detail.update(text=("请整理方案、执行、核验与未完成事项" if actor == "user"
-                                else f"进度监督判断本阶段完成，请整理阶段汇总"),
-                          requested_by=actor, recipients=[reporter])
+            stage = a.get("issue_id") or None
+            if stage:
+                # A stage summary is scoped to one issue and the boards it lists,
+                # so it can land while the rest of the project is still moving.
+                scope, issue = self._stage_ready(p, stage)
+                revision = 1 + sum(1 for s in p.get("stages", [])
+                                   if s.get("issue_id") == stage)
+                entry = {"id": uid("stage"), "issue_id": stage,
+                         "title": issue["title"] if issue else "",
+                         "task_ids": [t["id"] for t in scope],
+                         "revision": revision, "requested_by": actor,
+                         "requested": now(), "status": "requested",
+                         "body": "", "submitted": None, "actor": None}
+                p.setdefault("stages", []).append(entry)
+                detail.update(text=f"进度监督判断阶段完成，请整理阶段汇总："
+                                    f"{entry['title'] or '已验收板块'}",
+                              requested_by=actor, issue_id=stage,
+                              stage_id=entry["id"], stage_revision=revision,
+                              task_ids=entry["task_ids"], recipients=[reporter])
+                result = entry
+            else:
+                self._ready(p)
+                if p["summary_requested"]:
+                    raise Invalid("已请求汇总，请等待负责人响应。")
+                p["summary_requested"] = True
+                detail.update(text=("请整理方案、执行、核验与未完成事项" if actor == "user"
+                                    else f"进度监督判断本阶段完成，请整理阶段汇总"),
+                              requested_by=actor, recipients=[reporter])
         elif action == "summary_submit":
             if actor != p["assignments"]["reporter"]:
                 raise Invalid("只有当前汇总负责人可提交汇总。")
-            self._ready(p)
-            if not p["summary_requested"] or p["paused"]:
-                raise Invalid("用户尚未派发汇总，或任务已暂停。")
-            p["summary"] = {"body": text(a.get("body"), "汇总", 30000), "actor": actor, "created": now()}
-            detail.update(text="汇总负责人提交了交付说明")
-            result = p["summary"]
+            stage_id = a.get("stage_id")
+            if stage_id:
+                stage = get(p.get("stages", []), stage_id, "阶段汇总")
+                if stage["status"] == "submitted":
+                    raise Invalid("该阶段已有汇总；返修后请按新修订再提交。")
+                if p["paused"]:
+                    raise Invalid("任务已暂停，暂不能提交阶段汇总。")
+                stage.update(body=text(a.get("body"), "阶段汇总", 30000),
+                             status="submitted", submitted=now(), actor=actor)
+                detail.update(text=f"阶段汇总已提交：{stage['title'] or stage['id']}",
+                              stage_id=stage_id, stage_revision=stage["revision"],
+                              issue_id=stage.get("issue_id"))
+                result = stage
+            else:
+                self._ready(p)
+                if not p["summary_requested"] or p["paused"]:
+                    raise Invalid("用户尚未派发汇总，或任务已暂停。")
+                p["summary"] = {"body": text(a.get("body"), "汇总", 30000), "actor": actor, "created": now()}
+                detail.update(text="汇总负责人提交了交付说明")
+                result = p["summary"]
         else:
             raise Invalid("不支持的操作。")
         self._event(db, p["id"], action, actor, detail)
         return result
+
+    def _mentions(self, state, body, candidates, explicit):
+        """Who a message is addressed to.
+
+        Naming one member must not wake everyone else — that is exactly what "the
+        whole team acted on my @Codex" looks like from the panel. An explicit
+        mention therefore wins; with no mention the whole thread is addressed, as
+        before. The server resolves the names, so a client cannot widen the
+        audience by sending its own recipient list.
+
+        Explicit ids are preferred; a name written in the text is accepted for
+        callers that only send text. A name nobody recognises is reported rather
+        than ignored, so a typo cannot silently fall back to broadcasting.
+        """
+        known = {}
+        for agent in state["agents"]:
+            known[agent["id"]] = agent["id"]
+            label = agent.get("name") or ""
+            if label and label not in known:
+                known[label] = agent["id"]
+        resolved, unknown = [], []
+        if isinstance(explicit, list) and explicit:
+            for item in explicit:
+                target = known.get(item) if isinstance(item, str) else None
+                if not target and isinstance(item, str):
+                    target = known.get(item.lstrip("@"))
+                if target:
+                    resolved.append(target)
+                else:
+                    unknown.append(str(item))
+        else:
+            for match in re.finditer(r"@([^\s@,，。:：;；!！?？'\"()\[\]<>|]+)", body or ""):
+                token = match.group(1).strip()
+                target = known.get(token)
+                if target:
+                    resolved.append(target)
+                else:
+                    # Any name-shaped token after @ that matches no member is
+                    # reported. Guessing that it "was not a mention" is what made
+                    # a typo silently fall back to notifying everyone.
+                    unknown.append(token)
+        chosen = [m for m in dict.fromkeys(resolved) if m in candidates]
+        if not chosen:
+            if unknown:
+                raise Invalid("无法识别的 @ 对象：" + "、".join(sorted(set(unknown)))
+                              + "。请改选成员列表中的对象；不写 @ 时会通知全组。")
+            return None, []
+        return chosen, sorted(set(unknown))
 
     def _attachments(self, attachments):
         clean = []
@@ -720,6 +820,32 @@ class Store:
             raise Invalid("请指定方案监督、执行和汇总负责人。")
         for member_id in assignments.values():
             get(state["agents"], member_id, "负责人")
+
+    @staticmethod
+    def _stage_ready(p, issue_id=None):
+        """Whether a *stage* can be summarised, which is narrower than the project.
+
+        A stage is one issue plus the boards it lists, or — with no issue named —
+        every board that is already done. The whole-project gate stays as it was
+        for the final summary; a stage summary must not wait for work that has not
+        started, or it would never appear while the project is in progress.
+        """
+        issue = None
+        if issue_id:
+            issue = get(p["issues"], issue_id, "议题")
+            if issue.get("archived"):
+                raise Invalid("议题已回收，不能作为阶段汇总范围。")
+            scope = [t for t in p["tasks"] if t["id"] in (issue.get("task_ids") or [])]
+        else:
+            scope = [t for t in p["tasks"] if not t.get("archived") and t["status"] == "done"]
+        if not scope and not issue_id:
+            raise Invalid("还没有已验收的板块，无法做阶段汇总。")
+        unfinished = [t for t in scope if t["status"] != "done" and not t.get("archived")]
+        if unfinished:
+            raise Invalid(f"阶段内还有 {len(unfinished)} 个板块未验收，请先完成核验。")
+        if issue is not None and issue["status"] == "open":
+            raise Invalid("该议题尚未解决，先处理决定再做阶段汇总。")
+        return scope, issue
 
     @staticmethod
     def _ready(p):

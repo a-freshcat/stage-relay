@@ -252,7 +252,7 @@ function decisions(p) {
     const index = i.options.findIndex(o => o.id === choice);
     const affected = p.tasks.filter(t => i.task_ids.includes(t.id));
     return `<article class="decision-card"><h3>调整实现方案</h3><div class="decision-context">关联议题：${esc(i.title)}</div>${i.options.map((o,j) => `<label class="option"><input type="radio" name="option-${i.id}" value="${o.id}" data-choice="${i.id}" ${o.id === choice ? 'checked' : ''}><span><span class="option-title">${String.fromCharCode(65+j)} &nbsp; ${esc(o.title)}</span><span class="option-detail">${esc(o.detail)}</span></span></label>`).join('')}<div class="decision-impact">${affected.length ? `影响：${esc(affected.map(t => t.title).join('、'))}暂缓，其他板块可继续` : '此议题未暂停工作板块'}</div>${btn('resolve',`确认 ${String.fromCharCode(65+index)} · 继续任务`,'play','primary full',`data-issue="${i.id}"`)}<div class="small-actions">${btn('supplement','补充要求','','',`data-issue="${i.id}"`)}${btn('open-issue','查看讨论依据','arrow','ghost',`data-issue="${i.id}"`)}</div></article>`;
-  }).join('') || `<div class="no-decision">${icon('check')}暂时没有需要你决定的事项<br>成员有分歧时会在这里提出</div>`}</section><section class="rail-section"><h2>最终汇总</h2><div class="reporter-row"><span>负责人 &nbsp; <strong>${esc(name(p.assignments.reporter))}</strong></span>${btn('assign','更换','','')}</div><div class="checklist">${[['方案与决策记录',p.tasks.length > 0 && !open.length],['文件改动与检查结果',allDone],['未完成事项',!!p.summary]].map(([label,checked]) => `<div class="checklist-item"><span class="check-box${checked ? ' checked' : ''}">${checked ? icon('check') : ''}</span>${label}</div>`).join('')}<div class="checklist-foot">${p.summary ? '负责人已提交汇总，可查看交付记录' : ready ? '核验材料已齐全，可以派发汇总' : '材料齐全后，再交给负责人汇总'}</div></div><div class="stack rail-buttons">${p.summary ? btn('deliveries','查看交付说明','file','full') : btn('summary-request',p.summary_requested ? '汇总已派发 · 等待响应' : '交给负责人汇总','play','full',!ready || p.summary_requested || p.demo || p.paused ? 'disabled' : '')}${btn('export','导出当前记录','download','ghost full')}</div></section><div class="principle">${icon('info')}你决定方向，成员负责推进</div></aside>`;
+  }).join('') || `<div class="no-decision">${icon('check')}暂时没有需要你决定的事项<br>成员有分歧时会在这里提出</div>`}</section><section>${(p.stages || []).length ? `<section class="rail-section"><h2>阶段汇总</h2>${p.stages.filter(s => s.status === 'submitted' || s.status === 'requested').slice(-4).reverse().map(s => `<div class="reporter-row"><span>${esc(s.title || '已验收板块')} · 第 ${s.revision} 版 ${s.status === 'submitted' ? badge('已提交', 'green', 'check') : badge('等待汇总', 'blue', 'clock')}</span></div>`).join('')}</section>` : ''}<section class="rail-section"><h2>最终汇总</h2><div class="reporter-row"><span>负责人 &nbsp; <strong>${esc(name(p.assignments.reporter))}</strong></span>${btn('assign','更换','','')}</div><div class="checklist">${[['方案与决策记录',p.tasks.length > 0 && !open.length],['文件改动与检查结果',allDone],['未完成事项',!!p.summary]].map(([label,checked]) => `<div class="checklist-item"><span class="check-box${checked ? ' checked' : ''}">${checked ? icon('check') : ''}</span>${label}</div>`).join('')}<div class="checklist-foot">${p.summary ? '负责人已提交汇总，可查看交付记录' : ready ? '核验材料已齐全，可以派发汇总' : '材料齐全后，再交给负责人汇总'}</div></div><div class="stack rail-buttons">${p.summary ? btn('deliveries','查看交付说明','file','full') : btn('summary-request',p.summary_requested ? '汇总已派发 · 等待响应' : '交给负责人汇总','play','full',!ready || p.summary_requested || p.demo || p.paused ? 'disabled' : '')}${btn('export','导出当前记录','download','ghost full')}</div></section><div class="principle">${icon('info')}你决定方向，成员负责推进</div></aside>`;
 }
 function closedRail(p) {
   const resources = (state.runtime?.resources || []).filter(r => r.project === p.id);
@@ -594,10 +594,26 @@ async function sendMessage() {
   if (t.locked) return toast('任务已结束，群聊为只读记录。');
   ui.submitting = true;
   try {
-    if (t.mode === 'project') await mutate('project_message',{body:body || '分享了附件',attachments:files});
-    else await mutate('message',{issue_id:t.id,body:body || '分享了附件',attachments:files});
+    // Structured mentions: the server resolves and validates them, so naming one
+    // member does not wake the whole team. Pure-text @ still works for callers
+    // that cannot send ids.
+    const mentioned = resolveMentions(body || '');
+    const extra = mentioned.length ? {mentions:mentioned} : {};
+    if (t.mode === 'project') await mutate('project_message',{body:body || '分享了附件',attachments:files,...extra});
+    else await mutate('message',{issue_id:t.id,body:body || '分享了附件',attachments:files,...extra});
     ui.drafts[t.id] = ''; ui.files[t.id] = []; saveChat(); render();
   } finally {ui.submitting = false; render();}
+}
+// Resolve `@token` against the real member ids and display names, so what the
+// server receives is an id it can verify rather than a guess from the text.
+function resolveMentions(body){
+  const found = [];
+  for (const match of (body || '').matchAll(/@([^\s@,，。:：;；!！?？'"()\[\]<>|]+)/g)) {
+    const token = match[1].trim();
+    const agent = (state.agents || []).find(a => a.id === token || a.name === token);
+    if (agent && !found.includes(agent.id)) found.push(agent.id);
+  }
+  return found;
 }
 async function recordRecycle(kind,itemId,issueId){
   const label={task:'工作板块',issue:'议题',project_message:'群聊消息',issue_message:'议题消息'}[kind]||'记录';
