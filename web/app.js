@@ -234,11 +234,18 @@ function tasks(p) {
   const visible=p.tasks.filter(t=>!t.archived);
   return `<div class="task-table"><table><thead><tr><th>工作板块</th><th>负责人</th><th>状态</th><th>管理</th></tr></thead><tbody>${visible.map((t,i) => `<tr><td><div class="task-title">${icon(i % 2 ? 'screen' : 'layers')}<button data-action="task-detail" data-task="${t.id}">${esc(t.title)}</button></div></td><td class="owner-cell">${esc(name(t.owner))}</td><td>${badge(...statuses[t.status], t.status === 'blocked' ? 'clock' : t.status === 'done' ? 'check' : '')}</td><td>${btn('record-archive','回收','close','ghost',`data-kind="task" data-item="${t.id}"`)}</td></tr>`).join('')}</tbody></table>${!visible.length ? '<div class="table-empty">暂无可见工作板块，可从回收区恢复。</div>' : ''}</div><div class="table-actions">${p.closed ? '' : btn('new-task','添加板块','plus','ghost')}<span class="hint">执行结果提交后，由监督者核验</span>${p.closed ? badge('任务已结束，不再派发') : !p.demo ? btn('dispatch','派发任务','play','',p.paused || !visible.some(t => !t.dispatched) ? 'disabled' : '') : badge('演示数据，不派发到应用')}${btn('record-bin','记录回收区','layers','ghost')}</div>`;
 }
-function issueCard(i, full = false) {
-  return `<article class="issue-card"><div class="row between"><button class="issue-title" data-action="open-issue" data-issue="${i.id}">${esc(i.title)}</button>${badge(i.status === 'open' ? (i.options.length ? '待决定' : '讨论中') : '已解决', i.status === 'open' ? 'amber' : 'green')}</div><div class="issue-meta">发起：${esc(name(i.creator))} <span aria-hidden="true">·</span> 群主：我${full ? ` · ${esc(datetime(i.created))}` : ''}</div><div class="issue-bottom"><div class="member-chips">${chip('user')}${i.members.map(chip).join('')}${btn('invite','邀请成员','plus','ghost',`data-issue="${i.id}"`)}</div>${btn('open-issue',`打开群聊${full ? ` · ${i.messages.filter(m=>!m.archived).length}` : ''}`,'chat','',`data-issue="${i.id}"`)}${btn('record-archive','回收议题','close','ghost',`data-kind="issue" data-item="${i.id}"`)}</div></article>`;
+// Unread mentions of the user. The server counts them per issue (and per project
+// chat as "project"); the panel draws a red dot and clears a mention only when
+// that message has actually been on screen.
+const mentionCount = (p, key) => (p?.mention_counts?.[key] || 0);
+const activeProject = () => (state?.projects || []).find(x => x.id === ui.project) || (state?.projects || [])[0] || null;
+function issueCard(i, full = false, project) {
+  const unread = mentionCount(project || activeProject(), i.id);
+  const dot = unread ? `<b class="mention-dot" data-action="open-issue-mention" data-issue="${i.id}" title="有 ${unread} 条提到你的未读消息">${unread}</b>` : '';
+  return `<article class="issue-card ${unread ? 'has-mention' : ''}"><div class="row between"><button class="issue-title" data-action="open-issue" data-issue="${i.id}">${esc(i.title)}</button>${dot}${badge(i.status === 'open' ? (i.options.length ? '待决定' : '讨论中') : '已解决', i.status === 'open' ? 'amber' : 'green')}</div><div class="issue-meta">发起：${esc(name(i.creator))} <span aria-hidden="true">·</span> 群主：我${full ? ` · ${esc(datetime(i.created))}` : ''}</div><div class="issue-bottom"><div class="member-chips">${chip('user')}${i.members.map(chip).join('')}${btn('invite','邀请成员','plus','ghost',`data-issue="${i.id}"`)}</div>${btn('open-issue',`打开群聊${full ? ` · ${i.messages.filter(m=>!m.archived).length}` : ''}`,'chat','',`data-issue="${i.id}"`)}${btn('record-archive','回收议题','close','ghost',`data-kind="issue" data-item="${i.id}"`)}</div></article>`;
 }
 function overview(p) {
-  const openProject = p.chat?.length ? `项目群聊 · ${p.chat.length}` : '项目群聊';
+  const openProject = (p.chat?.length ? `项目群聊 · ${p.chat.length}` : '项目群聊') + (mentionCount(p,'project') ? ` · @${mentionCount(p,'project')} 未读` : '');
   return `<div class="dashboard"><section class="workspace"><div class="section-heading"><div><h1>任务与分工</h1><p>指定负责人，让协作在原应用中发生</p></div>${p.closed ? '' : btn('assign','调整分工','edit')}</div>${cards(p)}${progress(p)}${tasks(p)}<div class="section-divider"></div><div class="section-heading"><h2>关键议题</h2><div class="row">${btn('open-project-chat',openProject,'chat','ghost')}${p.closed ? '' : btn('new-issue','发起议题','plus')}</div></div><div class="issue-list">${p.issues.some(i=>!i.archived) ? p.issues.filter(i=>!i.archived).slice().sort((a,b) => (a.status === 'resolved') - (b.status === 'resolved')).map(i => issueCard(i)).join('') : `<div class="empty">${icon('chat')}还没有议题。<br>遇到阻碍、分歧或新想法时，在这里一起讨论；没有议题也可以在项目群聊里交接。<div class="empty-actions">${p.closed ? '' : btn('new-issue','发起议题','plus')}${btn('open-project-chat','打开项目群聊','chat','ghost')}</div></div>`}</div><div class="project-goal"><strong>任务目标</strong><br>${esc(p.goal)}${!p.demo ? `<div class="workspace-binding">${icon('folder')}<code>${esc(p.workspace || '尚未指定工作区')}</code>${!p.workspace ? btn('set-workspace','指定工作区','folder','ghost') : ''}</div>` : ''}</div></section>${p.closed ? closedRail(p) : decisions(p)}</div>`;
 }
 function decisions(p) {
@@ -366,7 +373,7 @@ function chatLog(t) {
   const live = t.messages.filter(m => !m.archived);
   const gone = t.messages.filter(m => m.archived);
   if (!t.messages.length) return `<div class="empty">${icon('chat')}${t.mode === 'project' ? '项目群聊还没有消息。<br>可以直接说明进度、提问或交接，不必先发起议题。' : '还没有消息，先说明背景。'}</div>`;
-  const body = m => `<article class="message ${m.actor === 'user' ? 'user' : ''} ${m.decision ? 'decision' : ''} ${m.archived ? 'recycled' : ''}">${appIcon(m.actor)}<div class="message-body"><div class="message-meta"><strong>${esc(name(m.actor))}</strong><time datetime="${esc(m.created)}">${esc(date(m.created))}</time>${m.archived ? badge('已回收') : btn('record-archive','回收','','ghost',`data-kind="${t.mode === 'issue' ? 'issue_message' : 'project_message'}" data-item="${m.id}" data-issue="${t.mode === 'issue' ? t.issue.id : ''}" title="移入回收区，可恢复"`)}</div><div class="message-text">${esc(m.body)}${(m.attachments || []).map(f => `<a class="attachment" href="/files/${f.id}" download>${icon('file')}${esc(f.name)} ${icon('arrow')}</a>`).join('')}</div>${m.archived ? `<div class="small muted">${btn('record-restore','恢复','arrow','ghost',`data-kind="${t.mode === 'issue' ? 'issue_message' : 'project_message'}" data-item="${m.id}" data-issue="${t.mode === 'issue' ? t.issue.id : ''}"`)}</div>` : ''}</div></article>`;
+  const body = m => `<article class="message ${m.actor === 'user' ? 'user' : ''} ${m.decision ? 'decision' : ''} ${m.archived ? 'recycled' : ''} ${m.mentions_user ? 'mentions-user' : ''}" id="msg-${m.id}" data-message="${m.id}"${m.mentions_user ? ' data-mentions-user="1"' : ''}>${appIcon(m.actor)}<div class="message-body"><div class="message-meta"><strong>${esc(name(m.actor))}</strong>${m.mentions_user ? '<span class="mention-tag" title="这条消息明确提到你">提到你</span>' : ''}<time datetime="${esc(m.created)}">${esc(date(m.created))}</time>${m.archived ? badge('已回收') : btn('record-archive','回收','','ghost',`data-kind="${t.mode === 'issue' ? 'issue_message' : 'project_message'}" data-item="${m.id}" data-issue="${t.mode === 'issue' ? t.issue.id : ''}" title="移入回收区，可恢复"`)}</div><div class="message-text">${esc(m.body)}${(m.attachments || []).map(f => `<a class="attachment" href="/files/${f.id}" download>${icon('file')}${esc(f.name)} ${icon('arrow')}</a>`).join('')}</div>${m.archived ? `<div class="small muted">${btn('record-restore','恢复','arrow','ghost',`data-kind="${t.mode === 'issue' ? 'issue_message' : 'project_message'}" data-item="${m.id}" data-issue="${t.mode === 'issue' ? t.issue.id : ''}"`)}</div>` : ''}</div></article>`;
   return (live.map(body).join('') || `<div class="empty">${icon('chat')}这个会话的消息都已回收，可在下方恢复。</div>`)
     + (gone.length ? `<details class="recycled-group"><summary>已回收消息 ${gone.length}</summary>${gone.map(body).join('')}</details>` : '');
 }
@@ -410,10 +417,11 @@ function render() {
   document.body.classList.toggle('is-offline',ui.offline);
   document.title = `${p.title} · Stage Relay`;
   const openCount = p.issues.filter(i => i.status === 'open').length;
+  const mentionTotal = p.mention_total || 0;
   if (ui.standalone) {
     $('#app').innerHTML = `<div class="layout">${chat(p) || '<div class="empty">找不到会话，请返回任务总览。</div>'}</div>`;
   } else {
-    $('#app').innerHTML = `<div class="layout"><aside class="sidebar"><div class="brand"><img src="/assets/relay.svg" alt=""><span>Stage Relay</span></div><nav class="nav" aria-label="主导航">${[['overview','任务总览','tasks'],['members','成员与分工','users'],['issues','议题群聊','chat'],['deliveries','交付记录','file'],['settings','设置与占用','layers']].map(([page,label,ico]) => `<button data-action="nav" data-page="${page}" class="${ui.page === page ? 'active' : ''}" title="${label}" ${ui.page === page ? 'aria-current="page"' : ''}>${icon(ico)}<span>${label}</span>${page === 'issues' && openCount ? `<b class="count">${openCount}</b>` : ''}</button>`).join('')}</nav><div class="projects"><span class="eyebrow">当前项目</span>${state.projects.map(project => `<button class="project-link ${p.id === project.id ? 'active' : ''}" data-action="project" data-project="${project.id}" title="${esc(project.title)}">${icon('folder')}<span>${esc(project.title)}</span>${project.demo ? '<small class="demo-dot">演示</small>' : ''}</button>`).join('')}</div><div class="sidebar-bottom"><button class="new-project" data-action="new-project" title="新建任务">${icon('plus')}新建任务</button><div class="local-status"><i class="dot"></i>${ui.offline ? '连接中断 · 正在重试' : '本地运行 · 自动保存'}</div></div></aside><div class="shell"><header class="topbar"><span class="topbar-title">多 Agent 协作台</span><span class="top-divider"></span><span class="project-name" title="${esc(p.title)}">项目：${esc(p.title)}</span>${p.demo ? '<button class="demo-badge demo-reset" data-action="reset-demo" title="重置演示场景">演示任务 ↺</button>' : ''}<span class="spacer"></span><span class="version">Codex + DSH · v0.3</span>${btn('open-project-chat',p.chat?.length ? `项目群聊 ${p.chat.length}` : '项目群聊','chat','ghost')}${p.closed ? `<span class="badge">已结束 · 只读</span>${!p.demo ? btn('forget-project','移入回收区','archive','ghost') : ''}` : `${btn('pause',p.paused ? '恢复派发' : '暂停全部',p.paused ? 'play' : 'pause')}${!p.demo ? btn('close-project','结束任务','check','ghost') : ''}`}<span class="user"><span class="avatar-user">我</span><span>我 · 群主</span></span></header>${ui.offline ? '<div class="offline-banner">暂时无法连接本地服务。页面内容为上次保存的数据，正在尝试恢复连接。</div>' : ''}<div class="main-frame"><main class="canvas">${ui.page === 'members' ? memberPage() : ui.page === 'issues' ? issuesPage(p) : ui.page === 'deliveries' ? deliveries(p) : ui.page === 'settings' ? settingsPage(p) : overview(p)}</main>${ui.chat ? chat(p) : ''}</div></div></div>`;
+    $('#app').innerHTML = `<div class="layout"><aside class="sidebar"><div class="brand"><img src="/assets/relay.svg" alt=""><span>Stage Relay</span></div><nav class="nav" aria-label="主导航">${[['overview','任务总览','tasks'],['members','成员与分工','users'],['issues','议题群聊','chat'],['deliveries','交付记录','file'],['settings','设置与占用','layers']].map(([page,label,ico]) => `<button data-action="nav" data-page="${page}" class="${ui.page === page ? 'active' : ''}" title="${label}" ${ui.page === page ? 'aria-current="page"' : ''}>${icon(ico)}<span>${label}</span>${page === 'issues' && (openCount || mentionTotal) ? `<b class="count${mentionTotal ? ' mention' : ''}"${mentionTotal ? ` title="${mentionTotal} 条提到你的未读消息"` : ''}>${mentionTotal ? `@${mentionTotal}` : openCount}</b>` : ''}</button>`).join('')}</nav><div class="projects"><span class="eyebrow">当前项目</span>${state.projects.map(project => `<button class="project-link ${p.id === project.id ? 'active' : ''}" data-action="project" data-project="${project.id}" title="${esc(project.title)}">${icon('folder')}<span>${esc(project.title)}</span>${project.demo ? '<small class="demo-dot">演示</small>' : ''}</button>`).join('')}</div><div class="sidebar-bottom"><button class="new-project" data-action="new-project" title="新建任务">${icon('plus')}新建任务</button><div class="local-status"><i class="dot"></i>${ui.offline ? '连接中断 · 正在重试' : '本地运行 · 自动保存'}</div></div></aside><div class="shell"><header class="topbar"><span class="topbar-title">多 Agent 协作台</span><span class="top-divider"></span><span class="project-name" title="${esc(p.title)}">项目：${esc(p.title)}</span>${p.demo ? '<button class="demo-badge demo-reset" data-action="reset-demo" title="重置演示场景">演示任务 ↺</button>' : ''}<span class="spacer"></span><span class="version">Codex + DSH · v0.3</span>${btn('open-project-chat',(p.chat?.length ? `项目群聊 ${p.chat.length}` : '项目群聊') + (mentionCount(p,'project') ? ` · @${mentionCount(p,'project')} 未读` : ''),'chat','ghost')}${p.closed ? `<span class="badge">已结束 · 只读</span>${!p.demo ? btn('forget-project','移入回收区','archive','ghost') : ''}` : `${btn('pause',p.paused ? '恢复派发' : '暂停全部',p.paused ? 'play' : 'pause')}${!p.demo ? btn('close-project','结束任务','check','ghost') : ''}`}<span class="user"><span class="avatar-user">我</span><span>我 · 群主</span></span></header>${ui.offline ? '<div class="offline-banner">暂时无法连接本地服务。页面内容为上次保存的数据，正在尝试恢复连接。</div>' : ''}<div class="main-frame"><main class="canvas">${ui.page === 'members' ? memberPage() : ui.page === 'issues' ? issuesPage(p) : ui.page === 'deliveries' ? deliveries(p) : ui.page === 'settings' ? settingsPage(p) : overview(p)}</main>${ui.chat ? chat(p) : ''}</div></div></div>`;
   }
   if ($('.canvas')) $('.canvas').scrollTop = oldCanvas;
   const newChat = $('#chat-scroll');
@@ -576,10 +584,51 @@ function chooseProject(id) {
 function openIssue(id) {
   ui.issue = id; ui.chatMode = 'issue'; ui.chat = true; saveChat(); render();
   if ($('#chat-scroll')) $('#chat-scroll').scrollTop = $('#chat-scroll').scrollHeight;
+  // Only what is actually on screen is cleared; a mention above the fold stays
+  // unread until the user scrolls to it.
+  settleMentions();
+}
+// Clear the mentions the user can actually see in the open thread.
+//
+// Opening a thread is not reading it: the count must survive a refresh for
+// everything that was never scrolled into view, and each issue keeps its own.
+let settling = false;
+async function settleMentions() {
+  const p = current(); const t = currentThread(p);
+  if (!p || !t || !ui.chat || settling) return;
+  const key = t.mode === 'project' ? 'project' : t.id;
+  if (!mentionCount(p, key)) return;
+  const scroller = $('#chat-scroll');
+  if (!scroller) return;
+  const box = scroller.getBoundingClientRect();
+  const visible = [...scroller.querySelectorAll('[data-mentions-user]')]
+    .filter(node => node.getBoundingClientRect().bottom > box.top && node.getBoundingClientRect().top < box.bottom)
+    .map(node => node.dataset.message);
+  if (!visible.length) return;
+  settling = true;
+  try {
+    await request('/api/action',{method:'POST',headers:{'Content-Type':'application/json','X-Relay-Client':'panel'},
+      body:JSON.stringify({action:'mentions_read',args:{project_id:p.id,issue_id:t.mode==='project'?null:t.id,message_ids:visible}})});
+  } catch { /* a failed clear must not hide the dot; the next view retries. */ }
+  finally { settling = false; }
 }
 function openProjectChat() {
   ui.chatMode = 'project'; ui.chat = true; saveChat(); render();
   if ($('#chat-scroll')) $('#chat-scroll').scrollTop = $('#chat-scroll').scrollHeight;
+  settleMentions();
+}
+// Jump from a red dot straight to the newest message addressed to the user.
+function openMention(issueId) {
+  openIssue(issueId);
+  const scroller = $('#chat-scroll');
+  if (!scroller) return;
+  const nodes = [...scroller.querySelectorAll('[data-mentions-user]')];
+  const target = nodes[nodes.length - 1];
+  if (!target) return;
+  target.scrollIntoView({block:'center'});
+  target.classList.add('mention-flash');
+  setTimeout(() => target.classList.remove('mention-flash'), 1600);
+  settleMentions();
 }
 async function copy(value) {
   try {await navigator.clipboard.writeText(value);toast('已复制。');}
@@ -701,7 +750,7 @@ const actions = {
   'accept-task':el => acceptance(el.dataset.task,true), 'reject-task':el => acceptance(el.dataset.task,false),
   'invite':el => invite(el.dataset.issue), 'supplement':el => supplement(el.dataset.issue),
   'connect':el => connect(el.dataset.agent), 'disconnect':el => connect(el.dataset.agent,true), 'authorize-connect':authorizeConnect, 'pause':pause,
-  'open-issue':el => openIssue(el.dataset.issue), 'open-project-chat':openProjectChat, 'close-chat':() => {ui.chat=false;saveChat();render();},
+  'open-issue':el => openIssue(el.dataset.issue), 'open-issue-mention':el => openMention(el.dataset.issue), 'open-project-chat':openProjectChat, 'close-chat':() => {ui.chat=false;saveChat();render();},
   'close-modal':closeModal,
   'nav':el => {ui.page=el.dataset.page;render();if ($('.canvas')) $('.canvas').scrollTop=0;if (ui.page === 'settings' && !ui.storage) refreshStorage().catch(error => toast(error.message,true));},
   'deliveries':() => {ui.page='deliveries';render();},

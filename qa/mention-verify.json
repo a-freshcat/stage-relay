@@ -1,0 +1,101 @@
+[
+ {
+  "check": "成员通过原生桥发出汇报",
+  "ok": true,
+  "detail": "{\"id\": \"message_c2af29d0e22a\", \"actor\": \"deepseek\", \"body\": \"@user 交付依据已补齐，请确认是否继续。\", \"created\": \"2026-11-09T16:08:42+00"
+ },
+ {
+  "check": "提到用户的汇报计入未读",
+  "ok": true,
+  "detail": {
+   "issue_386057427e3a": 1
+  }
+ },
+ {
+  "check": "代码里的 @user 不算提及",
+  "ok": true,
+  "detail": {
+   "issue_386057427e3a": 1
+  }
+ },
+ {
+  "check": "只写给成员的汇报不提醒用户",
+  "ok": true,
+  "detail": {
+   "issue_386057427e3a": 1
+  }
+ },
+ {
+  "check": "刷新后未读仍在",
+  "ok": true,
+  "detail": {
+   "issue_386057427e3a": 1
+  }
+ },
+ {
+  "check": "未读总数一致",
+  "ok": true,
+  "detail": 1
+ },
+ {
+  "check": "两个议题分别计数",
+  "ok": true,
+  "detail": {
+   "issue_386057427e3a": 1,
+   "issue_65f594155153": 1
+  }
+ },
+ {
+  "check": "清除一个议题只清自己",
+  "ok": true,
+  "detail": {
+   "issue_65f594155153": 1
+  }
+ },
+ {
+  "check": "另一个议题仍然未读",
+  "ok": true,
+  "detail": {
+   "issue_65f594155153": 1
+  }
+ },
+ {
+  "check": "清除动作报告了被清条目",
+  "ok": true,
+  "detail": {
+   "cleared": [
+    "message_c2af29d0e22a"
+   ],
+   "unread": 1
+  }
+ },
+ {
+  "check": "用户自己的发言不计未读",
+  "ok": true,
+  "detail": {
+   "issue_65f594155153": 1
+  }
+ },
+ {
+  "check": "项目群聊的提及单独计数",
+  "ok": true,
+  "detail": {
+   "issue_65f594155153": 1,
+   "project": 1
+  }
+ },
+ {
+  "check": "按消息清除只影响那一条",
+  "ok": true,
+  "detail": {
+   "issue_65f594155153": 1
+  }
+ },
+ {
+  "check": "验证夹具已回收",
+  "ok": true,
+  "detail": [
+   "project_f73089c42d65"
+  ]
+ }
+]

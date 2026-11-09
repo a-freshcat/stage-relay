@@ -27,7 +27,7 @@ from .codex import CodexManager, NativeError
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
-USER_ACTIONS = {"project_create", "workspace_set", "demo_create", "demo_reset", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "summary_request", "invite", "issue_create", "message", "project_message", "project_close", "record_archive", "record_restore", "project_forget", "project_restore"}
+USER_ACTIONS = {"project_create", "workspace_set", "demo_create", "demo_reset", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "summary_request", "invite", "issue_create", "message", "project_message", "project_close", "record_archive", "record_restore", "project_forget", "project_restore", "mentions_read"}
 SETTINGS_KINDS = {
     # Only these app-level leftovers may ever be listed for cleanup, and only
     # after the referenced project is gone. Sessions and credentials are not here.
@@ -72,11 +72,11 @@ class PanelServer(ThreadingHTTPServer):
         self.connections = Connections(store.path.parent, self.server_port, home=connection_home)
         self.refresh_credentials()
         self.codex=CodexManager(self,enabled=connection_home is None)
-        threading.Thread(target=self.codex.restore,daemon=True,name='RestoreNativeCodex').start()
         # Before anything can read the catalogue: an authorized member must not
         # keep loading an older bridge just because that path was recorded once.
         self.bridge_refresh = self.repoint_bridges()
         self.register_scratch()
+        threading.Thread(target=self.codex.restore,daemon=True,name='RestoreNativeCodex').start()
 
     def repoint_bridges(self):
         """Make already-authorized members load this package's bridge.
@@ -479,6 +479,12 @@ class Handler(BaseHTTPRequestHandler):
                 if action not in USER_ACTIONS:
                     raise Invalid("不支持此操作。")
                 args = body.get("args", {})
+                # Only these two are hand-written reads/writes; everything else is a
+                # normal store action.
+                if action == "mentions_read":
+                    self.json(self.server.store.mark_user_mentions_read(
+                        args.get("project_id"), args.get("issue_id"), args.get("message_ids")))
+                    return
                 result = self.server.store.apply(action, args)
                 if action == "record_archive":
                     self.server.runtime.cancel_archived_record(args.get("project_id"), args.get("kind"), args.get("item_id"), args.get("issue_id"))

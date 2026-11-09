@@ -256,6 +256,47 @@ class Workflows(unittest.TestCase):
         with self.assertRaises(Invalid):
             self.act("summary_submit", "codex", issue_id=still_open["id"], body="未解决")
 
+    def test_a_report_to_the_user_is_counted_once_and_cleared_where_seen(self):
+        """A report addressed to the user must be countable, per issue, and reset
+        only where it was actually looked at."""
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        first = self.issue()
+        second = self.issue()
+        # Addressed to the user in three different ways that must all count.
+        self.act("message", "deepseek", issue_id=first["id"], body="@user 交付依据已补齐")
+        self.act("message", "deepseek", issue_id=first["id"], body="@我 请确认是否继续")
+        self.act("message", "deepseek", issue_id=first["id"], body="汇报", mentions=["user"])
+        # Not addressed: an ordinary member message and a code sample that only
+        # talks about the token.
+        self.act("message", "deepseek", issue_id=first["id"], body="这条是给 codex 的，@codex 请核验")
+        self.act("message", "deepseek", issue_id=first["id"], body="写法示例：`@user` 不要触发")
+        self.act("message", "codex", issue_id=second["id"], body="@用户 另一个议题的汇报")
+
+        counts = self.project()["mention_counts"]
+        self.assertEqual(counts.get(first["id"]), 3, counts)
+        self.assertEqual(counts.get(second["id"]), 1, counts)
+        self.assertEqual(self.project()["mention_total"], 4)
+
+        # Clearing one issue leaves the other untouched.
+        read = self.store.mark_user_mentions_read(self.pid, first["id"])
+        self.assertEqual(len(read["cleared"]), 3)
+        after = self.project()
+        self.assertEqual(after["mention_counts"].get(first["id"], 0), 0)
+        self.assertEqual(after["mention_counts"].get(second["id"]), 1)
+
+        # Clearing a single message clears only that one.
+        project_chat = self.act("project_message", "deepseek", body="@user 项目级汇报")
+        self.assertTrue(project_chat["mentions_user"])
+        self.assertEqual(self.project()["mention_counts"].get("project"), 1)
+        self.store.mark_user_mentions_read(self.pid, None, [project_chat["id"]])
+        self.assertEqual(self.project()["mention_counts"].get("project", 0), 0)
+
+    def test_the_users_own_message_never_marks_itself_unread(self):
+        i = self.issue()
+        self.act("message", "user", issue_id=i["id"], body="@user 提醒我自己")
+        self.assertEqual(self.project()["mention_total"], 0)
+
     def test_a_mention_inside_code_is_not_a_mention(self):
         """Talking about `@codex` must not route to codex, nor be refused."""
         self.act("assign", assignments={"planner": "codex", "executor": "deepseek",

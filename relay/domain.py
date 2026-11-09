@@ -25,6 +25,11 @@ def uid(prefix):
     return f"{prefix}_{secrets.token_hex(6)}"
 
 
+# How a message can address the user themselves. The panel shows a red dot with a
+# count for these, and clears it once the message has actually been looked at.
+USER_LABELS = {"user", "我", "你", "群主", "用户"}
+
+
 class Invalid(ValueError):
     pass
 
@@ -101,6 +106,9 @@ class Store:
             # "no stage exists yet".
             project.setdefault("stages", [])
             project.setdefault('review_epoch',0)
+            # Unread user mentions are per project and per issue; the panel needs
+            # to see "0" rather than "this build cannot track them".
+            project.setdefault("user_mentions", [])
             project.setdefault("closed", False)
             project.setdefault("closed_at", None)
             project.setdefault("retention_days", None)
@@ -113,6 +121,15 @@ class Store:
             rows = db.execute("SELECT seq, project, kind, actor, body, created FROM events ORDER BY seq DESC LIMIT 120").fetchall()
         state["events"] = [dict(seq=r[0], project=r[1], kind=r[2], actor=r[3], detail=json.loads(r[4]), created=r[5]) for r in rows]
         state["revision"] = rows[0][0] if rows else 0
+        # Unread mentions per project and per issue, so a red dot can be drawn
+        # without the panel guessing from message order.
+        for project in state.get("projects", []):
+            counts = {}
+            for entry in project.get("user_mentions", []):
+                key = entry.get("issue_id") or "project"
+                counts[key] = counts.get(key, 0) + 1
+            project["mention_counts"] = counts
+            project["mention_total"] = sum(counts.values())
         return state
 
     @staticmethod
@@ -637,11 +654,19 @@ class Store:
             issue["messages"].append(message)
             addressed, unknown = self._mentions(
                 state, body, [m for m in issue["members"] if m != actor], a.get("mentions"))
+            # The user is a real addressee, not a word inside the text: a report
+            # meant for them must be countable, resettable and findable later.
+            wants_user = self._addresses_user(state, body, a.get("mentions"))
+            if wants_user:
+                message["mentions_user"] = True
+                self._note_user_mention(project=p, message=message, issue_id=issue["id"])
             detail.update(text=body[:300], issue_id=issue["id"], message_id=message["id"],
                           recipients=addressed if addressed is not None
                           else [m for m in issue["members"] if m != actor])
             if addressed is not None:
                 detail["mentions"] = addressed
+            if wants_user:
+                detail["mentions_user"] = True
             if unknown:
                 detail["unrecognized_mentions"] = unknown
             result = message
@@ -665,11 +690,17 @@ class Store:
             p["chat"].append(message)
             addressed, unknown = self._mentions(
                 state, body, [m for m in sorted(members) if m != actor], a.get("mentions"))
+            wants_user = self._addresses_user(state, body, a.get("mentions"))
+            if wants_user:
+                message["mentions_user"] = True
+                self._note_user_mention(project=p, message=message)
             detail.update(text=body[:300], message_id=message["id"], thread="project",
                           recipients=addressed if addressed is not None
                           else [m for m in sorted(members) if m != actor])
             if addressed is not None:
                 detail["mentions"] = addressed
+            if wants_user:
+                detail["mentions_user"] = True
             if unknown:
                 detail["unrecognized_mentions"] = unknown
             result = message
@@ -814,6 +845,71 @@ class Store:
         self._event(db, p["id"], action, actor, detail)
         return result
 
+    def _addresses_user(self, state, body, explicit):
+        """Whether this message is addressed to the user specifically.
+
+        The panel shows a red dot with a count for these, and clears it once the
+        user has actually looked. Three ways to address the user:
+
+        - `@user`, `@我`, `@你` or the user's own label written in the text;
+        - an explicit `mentions` list naming the user;
+        - a body that starts with an address line for the user.
+
+        Code spans and fenced blocks describe mentions instead of making them, so
+        they are stripped first — the same rule the member mentions follow.
+        """
+        labels = USER_LABELS
+        if isinstance(explicit, list):
+            for item in explicit:
+                if isinstance(item, str) and item.lstrip("@").strip() in labels:
+                    return True
+        scannable = re.sub(r"```.*?```", " ", body or "", flags=re.S)
+        scannable = re.sub(r"`[^`]*`", " ", scannable)
+        for match in re.finditer(r"@([^\s@,，。:：;；!！?？'\"()\[\]<>|`]+)", scannable):
+            if match.group(1).strip() in labels:
+                return True
+        return False
+
+    @staticmethod
+    def _note_user_mention(project, message, issue_id=None):
+        """Count one unread mention for the user, once per message.
+
+        Repeating the same event must not inflate the count, so the message id is
+        recorded as the key: a replayed delivery is ignored, and each issue keeps
+        its own tally.
+        """
+        if message.get("actor") == "user":
+            return
+        seen = project.setdefault("user_mentions", [])
+        if any(entry.get("message") == message["id"] for entry in seen):
+            return
+        seen.append({"message": message["id"], "issue_id": issue_id,
+                     "created": message.get("created")})
+
+    def mark_user_mentions_read(self, project_id, issue_id=None, message_ids=None):
+        """Clear the unread marks the user has actually seen.
+
+        Only the named messages are cleared. Opening a thread does not clear
+        mentions that were never scrolled into view, and a different issue is
+        untouched — the count must mean "not yet looked at".
+        """
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            state = self._state(db.execute("SELECT body FROM workspace WHERE id=1").fetchone()[0])
+            project = get(state["projects"], project_id, "项目")
+            entries = project.setdefault("user_mentions", [])
+            wanted = {m for m in (message_ids or []) if isinstance(m, str)}
+            kept, cleared = [], []
+            for entry in entries:
+                same_issue = issue_id is None or entry.get("issue_id") == issue_id
+                if (wanted and entry.get("message") in wanted) or (not wanted and same_issue):
+                    cleared.append(entry.get("message"))
+                else:
+                    kept.append(entry)
+            project["user_mentions"] = kept
+            db.execute("UPDATE workspace SET body=? WHERE id=1", (json.dumps(state, ensure_ascii=False),))
+        return {"cleared": cleared, "unread": len(kept)}
+
     def _mentions(self, state, body, candidates, explicit):
         """Who a message is addressed to.
 
@@ -841,6 +937,10 @@ class Store:
                     target = known.get(item.lstrip("@"))
                 if target:
                     resolved.append(target)
+                elif isinstance(item, str) and item.lstrip("@").strip() in USER_LABELS:
+                    # The user is a real addressee, not a typo: naming them must
+                    # not be refused, and it never widens the member audience.
+                    continue
                 else:
                     unknown.append(str(item))
         else:
@@ -855,6 +955,9 @@ class Store:
                 target = known.get(token)
                 if target:
                     resolved.append(target)
+                elif token in USER_LABELS:
+                    # Writing @user addresses the user; it is resolved, not unknown.
+                    continue
                 else:
                     # Any name-shaped token after @ that matches no member is
                     # reported. Guessing that it "was not a mention" is what made

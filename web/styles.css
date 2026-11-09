@@ -28,4 +28,4 @@ dialog{border:1px solid #d9dfd8;background:#fcfcfa;border-radius:14px;padding:0;
 .storage-list{display:flex;flex-direction:column;gap:6px;margin:8px 0}
 .storage-row{display:flex;gap:8px;align-items:center;border:1px solid #e6e8e7;border-radius:8px;padding:8px 10px;background:#fff}
 .storage-size{font-variant-numeric:tabular-nums;font-size:11px;color:#46524e}
-
+.mention-dot{border:0;background:#c0392b;color:#fff;font-size:10px;min-width:18px;height:18px;border-radius:20px;display:grid;place-items:center;padding:0 5px;font-weight:650;cursor:pointer}.mention-dot:hover{background:#96291e}.nav .count.mention{background:#c0392b;color:#fff}.issue-card.has-mention{border-color:#e2b1aa;background:#fdf7f6}.mention-tag{font-size:9px;color:#a4362a;background:#fbe9e6;border:1px solid #f0cdc7;border-radius:4px;padding:1px 5px;white-space:nowrap}.message.mentions-user .message-text{background:#fdf3f1;box-shadow:inset 2px 0 0 #c0392b}.message.mentions-user.mention-flash .message-text{animation:mention-flash 1.4s ease-out}@keyframes mention-flash{0%{background:#fbd9d3}100%{background:#fdf3f1}}

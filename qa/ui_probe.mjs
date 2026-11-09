@@ -58,7 +58,7 @@ const FileReader = class { readAsDataURL() { this.onerror?.(new Error('unused'))
 `;
 
 const epilogue = `
-globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, resolveMentions, decisions, openStage, openStages, render, renderKey, actions, comparableState};
+globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, resolveMentions, decisions, openStage, openStages, render, renderKey, actions, comparableState, issueCard, issuesPage, mentionCount, settleMentions, openMention};
 export {};
 `;
 
@@ -364,6 +364,59 @@ await (async () => {
   check('抽屉打开时活动变化触发重绘',
     probe.renderKey(probe.comparableState(a)) !== probe.renderKey(probe.comparableState(b)));
   probe.ui.chat = null;
+})();
+
+// Mentioning the user is a deliverable, not decoration: the entry needs a red dot
+// with a count, per issue, surviving a refresh, and cleared only for messages that
+// were actually on screen.
+const mentionProject = JSON.parse(JSON.stringify(open));
+mentionProject.id = 'project_mention_ui';
+mentionProject.title = '提及提醒任务';
+mentionProject.mention_counts = {'issue_m1': 2, 'issue_m2': 1, 'project': 1};
+mentionProject.mention_total = 4;
+const mentionBase = mentionProject.issues[0];
+mentionProject.issues = ['issue_m1', 'issue_m2', 'issue_m3'].map((id, n) => ({
+  ...mentionBase, id, title: ['第一个议题', '第二个议题', '第三个议题'][n],
+  status: 'open', options: [], archived: false, messages: [],
+  members: ['codex', 'deepseek'],
+}));
+rtState.projects.push(mentionProject);
+probe.ui.project = mentionProject.id;
+
+check('议题入口红点带未读计数',
+  probe.issuesPage(mentionProject).includes('mention-dot') &&
+  probe.issuesPage(mentionProject).includes('>2</b>'));
+check('没有提及的议题不显示红点',
+  !probe.issueCard(mentionProject.issues[2]).includes('mention-dot'));
+// The sidebar badge is drawn by render(); the topbar project-chat entry shows the
+// project-thread count in overview().
+check('未读计数进入项目群聊入口', probe.overview(mentionProject).includes('@1 未读'),
+  probe.overview(mentionProject).match(/项目群聊[^<]*/)?.[0] || 'no entry');
+
+// A refresh must restore the count: it comes from the server snapshot, not from
+// anything the panel remembers locally.
+const beforeReload = probe.state().projects.find(x => x.id === mentionProject.id).mention_total;
+check('刷新后未读计数仍在', beforeReload === 4, String(beforeReload));
+
+// Messages addressed to the user are marked, and messages that only talk about the
+// token in code are not.
+mentionProject.chat = [
+  {id:'msg_plain', actor:'codex', body:'普通进度', created:'2026-11-09T10:00:00+00:00'},
+  {id:'msg_user', actor:'codex', body:'@user 请确认', created:'2026-11-09T10:01:00+00:00', mentions_user:true},
+  {id:'msg_code', actor:'codex', body:'示例 `@user` 不触发', created:'2026-11-09T10:02:00+00:00'},
+];
+const mentionChatHtml = probe.chat(mentionProject);
+check('提到你的消息有可见标记', mentionChatHtml.includes('提到你') && mentionChatHtml.includes('data-message="msg_user"'));
+check('代码里的 @user 不被标记', !mentionChatHtml.includes('data-message="msg_code" data-mentions-user'));
+
+// Visibility decides the clear: fetching while the chat is closed, or with nothing
+// in view, must not consume the notice.
+await (async () => {
+  const calls = [];
+  globalThis.__probeRequests = calls;
+  probe.ui.chat = null;
+  await probe.settleMentions();
+  check('后台收到时不自动清除', calls.length === 0, JSON.stringify(calls));
 })();
 
 console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL UI CHECKS PASSED');
