@@ -297,6 +297,26 @@ class Workflows(unittest.TestCase):
         self.act("message", "user", issue_id=i["id"], body="@user 提醒我自己")
         self.assertEqual(self.project()["mention_total"], 0)
 
+    def test_prose_about_a_symbol_is_not_an_unknown_addressee(self):
+        """Explaining the badge must not be refused as a mistyped name.
+
+        The boundary: real member names and the user still address; a token that
+        reads as punctuation, a number or an address is treated as prose.
+        """
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()
+        for body in ["侧栏旁挂 @1 的角标", "@ 后面要跟名字", "写到 me@example.com 就行",
+                     "算力 a@b 这种写法", "角标是 @N 这种形式"]:
+            sent = self.act("message", "deepseek", issue_id=i["id"], body=body)
+            self.assertTrue(sent["body"], body)
+        # A real member name still addresses that member, and a real typo is
+        # still reported rather than silently broadcast.
+        real = self.act("message", "deepseek", issue_id=i["id"], body="请 @codex 核验")
+        self.assertTrue(real["body"])
+        with self.assertRaises(Invalid):
+            self.act("message", "deepseek", issue_id=i["id"], body="请 @coedx 核验")
+
     def test_a_mention_inside_code_is_not_a_mention(self):
         """Talking about `@codex` must not route to codex, nor be refused."""
         self.act("assign", assignments={"planner": "codex", "executor": "deepseek",

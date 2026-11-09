@@ -36,10 +36,11 @@ const listeners = new Map();
 const document = {
   querySelector: selector => node(selector), addEventListener(type,handler){listeners.set(type,handler);}, title: '', activeElement: null,
   body: {classList: {toggle(){}}}, createElement: () => node('created-' + Math.random()),
+  visibilityState: 'visible', hasFocus: () => true,
 };
 const localStorage = {getItem:k => store.has(k) ? store.get(k) : null, setItem:(k,v) => store.set(k, String(v))};
 const location = {search: '', href: 'http://127.0.0.1:4399/'};
-const window = {open(){}, pywebview: undefined};
+const window = {open(){}, pywebview: undefined, addEventListener(type,handler){listeners.set('window:'+type,handler);}};
 const setInterval = () => 0;
 const __responses = ${JSON.stringify({
   state: stateCopy,
@@ -417,6 +418,46 @@ await (async () => {
   probe.ui.chat = null;
   await probe.settleMentions();
   check('后台收到时不自动清除', calls.length === 0, JSON.stringify(calls));
+})();
+
+// Scrolling a message into view is how the user actually reads it. The clear must
+// happen then too — but only while the page is in front and that same thread is
+// the open one, otherwise a background tab would consume notices unseen.
+await (async () => {
+  const calls = [];
+  globalThis.__probeRequests = calls;
+  const originalFetch = globalThis.fetch;
+  probe.ui.chat = 'issue:1';
+  probe.ui.chatMode = 'issue';
+  probe.ui.issue = 'issue_m1';
+  probe.ui.project = mentionProject.id;
+  mentionProject.mention_counts = {'issue_m1': 1};
+  mentionProject.mention_total = 1;
+
+  // A page in the background must not clear.
+  Object.defineProperty(probe.document, 'visibilityState', {value: 'hidden', configurable: true});
+  await probe.settleMentions();
+  check('后台页面不清除未读', calls.length === 0, JSON.stringify(calls));
+  Object.defineProperty(probe.document, 'visibilityState', {value: 'visible', configurable: true});
+
+  // A page without focus must not clear either.
+  probe.document.hasFocus = () => false;
+  await probe.settleMentions();
+  check('失去焦点时不清除未读', calls.length === 0, JSON.stringify(calls));
+  probe.document.hasFocus = () => true;
+
+  // The open thread must be the one holding the mention.
+  probe.ui.issue = 'issue_m2';
+  await probe.settleMentions();
+  check('线程不匹配时不清除未读', calls.length === 0, JSON.stringify(calls));
+  probe.ui.issue = 'issue_m1';
+
+  // Scroll events are observed, so entering the viewport is enough.
+  const scroll = probe.listeners.get('scroll');
+  check('滚动事件已接入可见性判定', typeof scroll === 'function');
+  const keyup = probe.listeners.get('keyup');
+  check('键盘翻页也触发判定', typeof keyup === 'function');
+  probe.ui.chat = null;
 })();
 
 console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL UI CHECKS PASSED');

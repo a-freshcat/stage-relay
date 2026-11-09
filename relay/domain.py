@@ -950,18 +950,19 @@ class Store:
             # as happened, refused because the backtick joined the token.
             scannable = re.sub(r"```.*?```", " ", body or "", flags=re.S)
             scannable = re.sub(r"`[^`]*`", " ", scannable)
-            for match in re.finditer(r"@([^\s@,，。:：;；!！?？'\"()\[\]<>|`]+)", scannable):
-                token = match.group(1).strip()
+            for token in self._scan_tokens(scannable):
                 target = known.get(token)
                 if target:
                     resolved.append(target)
                 elif token in USER_LABELS:
                     # Writing @user addresses the user; it is resolved, not unknown.
                     continue
+                elif self._descriptive(token):
+                    # `@N` in "shows an @N badge" is punctuation, not a person.
+                    continue
                 else:
-                    # Any name-shaped token after @ that matches no member is
-                    # reported. Guessing that it "was not a mention" is what made
-                    # a typo silently fall back to notifying everyone.
+                    # A name-shaped token that matches no member is reported, so a
+                    # typo cannot silently fall back to notifying everyone.
                     unknown.append(token)
         chosen = [m for m in dict.fromkeys(resolved) if m in candidates]
         if not chosen:
@@ -970,6 +971,41 @@ class Store:
                               + "。请改选成员列表中的对象；不写 @ 时会通知全组。")
             return None, []
         return chosen, sorted(set(unknown))
+
+    # A token after @ is only a candidate when it looks like a name rather than
+    # prose. "the @1 badge", "@ 后面", "me@example.com" and "a@b" are addressed to
+    # nobody; treating them as unknown addressees rejected ordinary sentences.
+    TOKEN = re.compile(r"(?<![\w.+-])@([^\s@,，。:：;；!！?？'\"()\[\]<>|`]+)")
+    NAME = re.compile(r"[^\W\d_][\w.·-]*", re.UNICODE)
+
+    @classmethod
+    def _scan_tokens(cls, text_value):
+        """Name-shaped tokens written after @, in order, without duplicates."""
+        found = []
+        for match in cls.TOKEN.finditer(text_value or ""):
+            token = match.group(1).strip().rstrip(".,;:!?）)]】」』、")
+            if cls.NAME.fullmatch(token) and token not in found:
+                found.append(token)
+        return found
+
+    @staticmethod
+    def _descriptive(token):
+        """True when the token reads as punctuation or prose, not a person.
+
+        Kept narrow on purpose: an ordinary unknown name still has to be reported
+        so a typo cannot broadcast to everyone.
+        """
+        if not token:
+            return True
+        if token[0].isdigit():
+            return True
+        if not any(ch.isalnum() or ch in "_·" for ch in token):
+            return True
+        # A single capital letter is a placeholder in prose ("an @N badge",
+        # "the @X slot"), not somebody to notify.
+        if len(token) == 1 and token.isalpha():
+            return True
+        return False
 
     def _attachments(self, attachments):
         clean = []

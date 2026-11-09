@@ -596,13 +596,23 @@ let settling = false;
 async function settleMentions() {
   const p = current(); const t = currentThread(p);
   if (!p || !t || !ui.chat || settling) return;
+  // A background tab, or a thread that is not the open one, must not clear a
+  // notice: the user did not see it. Both are checked before any DOM geometry.
+  if (document.visibilityState === 'hidden' || !document.hasFocus()) return;
+  if (currentThreadId() !== t.id) return;
   const key = t.mode === 'project' ? 'project' : t.id;
   if (!mentionCount(p, key)) return;
   const scroller = $('#chat-scroll');
   if (!scroller) return;
   const box = scroller.getBoundingClientRect();
+  if (!box.height) return;
+  // Each message is checked on its own, so a partly scrolled list clears only the
+  // mentions that are really inside the viewport.
   const visible = [...scroller.querySelectorAll('[data-mentions-user]')]
-    .filter(node => node.getBoundingClientRect().bottom > box.top && node.getBoundingClientRect().top < box.bottom)
+    .filter(node => {
+      const rect = node.getBoundingClientRect();
+      return rect.height > 0 && rect.bottom > box.top && rect.top < box.bottom;
+    })
     .map(node => node.dataset.message);
   if (!visible.length) return;
   settling = true;
@@ -611,6 +621,11 @@ async function settleMentions() {
       body:JSON.stringify({action:'mentions_read',args:{project_id:p.id,issue_id:t.mode==='project'?null:t.id,message_ids:visible}})});
   } catch { /* a failed clear must not hide the dot; the next view retries. */ }
   finally { settling = false; }
+}
+// The open thread's identity, so a stale scroll event cannot clear another one.
+function currentThreadId() {
+  if (!ui.chat) return null;
+  return ui.chatMode === 'project' ? 'project' : (ui.issue || null);
 }
 function openProjectChat() {
   ui.chatMode = 'project'; ui.chat = true; saveChat(); render();
@@ -834,6 +849,15 @@ document.addEventListener('focusout',event => {
   if (event.target.id === 'chat-input' && !ui.composing && ui.pendingRender) {ui.pendingRender=false;queueMicrotask(() => {if (document.activeElement?.id !== 'chat-input') render();else ui.pendingRender=true;});}
 });
 document.addEventListener('toggle',event => {if (event.target.classList?.contains('exec-drawer')) ui.execOpen = event.target.open;}, true);
+// Scrolling is how a message enters view without clicking anything: observe it so
+// "actually looked at" is honoured, not only when a thread is first opened.
+let settleTimer = null;
+const queueSettle = () => {clearTimeout(settleTimer); settleTimer = setTimeout(() => {settleMentions();}, 180);};
+document.addEventListener('scroll',queueSettle,true);
+document.addEventListener('wheel',queueSettle,{passive:true,capture:true});
+document.addEventListener('keyup',event => {if (['PageUp','PageDown','ArrowUp','ArrowDown','Home','End',' '].includes(event.key)) queueSettle();});
+document.addEventListener('visibilitychange',() => {if (document.visibilityState === 'visible') queueSettle();});
+window.addEventListener('focus',queueSettle);
 document.addEventListener('change',event => {
   const el = event.target;
   if (el.dataset.choice) {ui.choices[el.dataset.choice]=el.value;render();}
