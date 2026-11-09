@@ -828,12 +828,24 @@ function renderKey(value) {
   }
   return JSON.stringify(value === undefined ? null : value);
 }
+// Native activity is written by a running agent on every step, so it changes on
+// almost every poll. It is only rendered inside the chat drawer's execution log,
+// so while that drawer is closed it cannot change anything on screen — counting
+// it rebuilt the whole panel every 2.5 s under a running session, which replaced
+// buttons between pointerdown and click and made them look dead.
+function comparableState(data) {
+  if (!data) return data;
+  if (ui.chat || !data.runtime || typeof data.runtime !== 'object') return data;
+  const runtime = {...data.runtime};
+  delete runtime.activity;
+  return {...data, runtime};
+}
 async function poll() {
   if (ui.polling) return;
   ui.polling = true;
   try {
     const next = await request('/api/state');
-    const changed = !state || renderKey(state) !== renderKey(next) || ui.offline;
+    const changed = !state || renderKey(comparableState(state)) !== renderKey(comparableState(next)) || ui.offline;
     state = next;ui.offline = false;
     if (changed) {
       if (ui.composing || document.activeElement?.id === 'chat-input') ui.pendingRender = true;

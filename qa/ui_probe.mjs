@@ -58,7 +58,7 @@ const FileReader = class { readAsDataURL() { this.onerror?.(new Error('unused'))
 `;
 
 const epilogue = `
-globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, resolveMentions, decisions, openStage, openStages, render, renderKey, actions};
+globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, resolveMentions, decisions, openStage, openStages, render, renderKey, actions, comparableState};
 export {};
 `;
 
@@ -347,6 +347,23 @@ await (async () => {
   down({target: {closest: () => ({dataset: {action: 'nav', page: 'deliveries'}, disabled: false})}});
   await click({target: {closest: () => ({dataset: {action: 'nav', page: 'settings'}, disabled: true})}});
   check('被禁用的替换按钮保持禁用', probe.ui.page === 'overview', probe.ui.page);
+})();
+
+// A running session writes native activity constantly; that only shows inside
+// the chat drawer's execution log. While the drawer is closed it must not cause a
+// rebuild, or a click landing mid-rebuild does nothing.
+await (async () => {
+  probe.ui.chat = null;
+  const a = JSON.parse(JSON.stringify(probe.state()));
+  const b = JSON.parse(JSON.stringify(probe.state()));
+  a.runtime = {activity: [{seq: 1, type: 'tool/call'}, {seq: 2, type: 'tool/result'}]};
+  b.runtime = {activity: [{seq: 3, type: 'tool/call'}]};
+  check('抽屉关闭时活动变化不重绘',
+    probe.renderKey(probe.comparableState(a)) === probe.renderKey(probe.comparableState(b)));
+  probe.ui.chat = 'issue:1';
+  check('抽屉打开时活动变化触发重绘',
+    probe.renderKey(probe.comparableState(a)) !== probe.renderKey(probe.comparableState(b)));
+  probe.ui.chat = null;
 })();
 
 console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL UI CHECKS PASSED');
