@@ -79,5 +79,15 @@ def open_application(app, test_home=None):
     target = application_target(app)
     if not target:
         raise Invalid("暂未定位到此应用，请先从桌面启动一次；接入配置已保留。")
+    # DSH's web app defaults `openBrowser` to true, so a desktop launch also hands
+    # the session to the default browser. That is a command-line decision
+    # (`--no-open`), not a profile setting: `openBrowser` resolves from
+    # `webStartup.openBrowser`, which the flags publish. When the target is a
+    # shortcut the flags cannot be passed through it, so the notice says what to
+    # do instead of pretending the flag was applied.
+    if app == "dsh" and str(target).lower().endswith(".lnk"):
+        return {"opened": True, "notice": "已请求打开本机 DSH 桌面端。若它同时弹出了浏览器页面，"
+                                          "是 DSH 自身的 openBrowser 默认行为；用 --no-open 启动可关闭，"
+                                          "桌面窗口本身不受影响。", "open_browser_default": True}
     os.startfile(target)
     return {"opened": True, "notice": "已请求打开本机应用；任务仍需应用会话确认领取。"}

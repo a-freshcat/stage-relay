@@ -68,15 +68,38 @@ export async function apply(ctx, config) {
           try {
             if(job.kind==='model-catalog') {
               const catalog=await ctx.sessionController.modelCatalog();
-              outcome={models:catalog.groups.flatMap(g=>g.models.map(m=>({provider:g.id,model:m.id,label:g.name+' / '+m.name}))).slice(0,1000)};
+              // Reasoning effort is a real per-route capability: it is read from
+              // the same model info DSH validates a request against, so an effort
+              // offered here is one the adapter will accept, and a route with no
+              // reasoning support offers none instead of a dead option.
+              const models=[];
+              for(const g of catalog.groups) {
+                for(const m of g.models) {
+                  const entry={provider:g.id,model:m.id,label:g.name+' / '+m.name};
+                  try {
+                    const info=await ctx.llm.resolveModelInfo?.(g.id,m.id);
+                    const reasoning=info?.reasoning;
+                    if(reasoning) {
+                      entry.efforts=reasoning.efforts.map(e=>e.id);
+                      entry.effortDefault=reasoning.defaultEffort;
+                    }
+                  } catch {}
+                  models.push(entry);
+                }
+              }
+              outcome={models:models.slice(0,1000)};
             } else {
               const agent=ctx.agents.get(job.session);
               if(!agent || agent.status==='running') throw new Error('Native session is not idle');
               const controller=ctx.sessionController;
               if(!controller.commands?.requireModel || !controller.agents?.selectForNextRequest) throw new Error('This DSH version does not support session-local model selection');
+              // An explicitly requested effort is validated by resolveCallConfig
+              // below: DSH rejects one the route does not support rather than
+              // silently clamping it, and that rejection becomes a failed receipt.
               await controller.commands.requireModel(job.selection);
               const resolved=await ctx.llm.resolveCallConfig(job.selection);
               const selected={provider:resolved.provider,model:resolved.model};
+              if(resolved.reasoningEffort) selected.reasoningEffort=resolved.reasoningEffort;
               await controller.agents.serializeImageAdmission(agent,async()=>controller.agents.selectForNextRequest(agent,selected));
               outcome={selected};
             }

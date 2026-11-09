@@ -58,7 +58,7 @@ const FileReader = class { readAsDataURL() { this.onerror?.(new Error('unused'))
 `;
 
 const epilogue = `
-globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence};
+globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField};
 export {};
 `;
 
@@ -211,6 +211,17 @@ const withRecycle = probe.settingsPage(closedProject);
 check('回收区列出可恢复记录', withRecycle.includes('已回收项目') && withRecycle.includes('移回列表'));
 check('存储占用按项目显示容量', withRecycle.includes('设置与占用') && /KB|B<\//.test(withRecycle));
 check('移入回收区说明会先结束项目', withRecycle.includes('先结束任务') || closedProject.closed);
+
+// Thinking depth is a real per-route capability: it must render only for a route
+// that reports efforts, default to the route default, and disappear otherwise
+// rather than offering a value the app would refuse.
+const withEfforts = [{provider:'p',model:'m',label:'P / M',efforts:['low','medium','high'],effortDefault:'medium'}];
+const noEfforts = [{provider:'p',model:'plain',label:'P / Plain'}];
+const effortHtml = probe.effortField(withEfforts, 0);
+check('思考深度选择器按路由渲染', effortHtml.includes('思考深度') && effortHtml.includes('name="native_effort"'));
+check('思考深度默认选中路由默认值', /<option value="medium" selected>/.test(effortHtml));
+check('思考深度列出全部受支持值', ['low','medium','high'].every(e => effortHtml.includes(`value="${e}"`)));
+check('无推理能力的路由不显示思考深度', probe.effortField(noEfforts, 0) === '');
 
 console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL UI CHECKS PASSED');
 process.exit(failures.length ? 1 : 0);

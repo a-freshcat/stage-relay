@@ -103,6 +103,27 @@ class NativeRuntime(unittest.TestCase):
         with self.assertRaises(Invalid):
             self.runtime.receipt('deepseek',{'id':job['id'],'status':'failed'})
 
+    def test_model_selection_carries_reasoning_effort_to_the_native_job(self):
+        pid=self.project['id']
+        self.runtime.bind(pid,'deepseek','native-one')
+        choice={'provider':'native-provider','model':'a-model','reasoningEffort':'high'}
+        request=self.runtime.model_command(pid,'deepseek','model-select',choice)
+        job=self.runtime.poll('deepseek',{'sessions':self.sessions})['jobs'][0]
+        self.assertEqual(job['id'],request['id'])
+        # The effort reaches the native side unchanged; DSH validates it, so the
+        # panel must not clamp or invent one.
+        self.assertEqual(job['selection']['reasoningEffort'],'high')
+        # An empty effort means "leave the route default alone", not a value.
+        plain=self.runtime.model_command(pid,'deepseek','model-select',
+                                        {'provider':'native-provider','model':'a-model',
+                                         'reasoningEffort':''})
+        jobs={j['id']:j for j in self.runtime.poll('deepseek',{'sessions':self.sessions})['jobs']}
+        self.assertNotIn('reasoningEffort',jobs[plain['id']]['selection'])
+        with self.assertRaises(Invalid):
+            self.runtime.model_command(pid,'deepseek','model-select',
+                                      {'provider':'native-provider','model':'a-model',
+                                       'reasoningEffort':'x'*80})
+
     def test_model_selection_waits_for_idle_and_does_not_resume_paused_work(self):
         pid=self.project['id']
         self.runtime.bind(pid,'deepseek','native-one')

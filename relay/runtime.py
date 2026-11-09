@@ -415,6 +415,14 @@ class Runtime:
             raise Invalid('请选择 Codex 或 DSH 原生成员。')
         if operation=='model-select' and (not isinstance(selection,dict) or any(not isinstance(selection.get(k),str) or not 0<len(selection[k])<=300 for k in ('provider','model'))):
             raise Invalid('请选择原应用提供的模型。')
+        if operation=='model-select' and selection.get('reasoningEffort'):
+            # The effort is passed through unchanged and validated by the native
+            # app: it rejects an effort the route does not support instead of
+            # clamping, and that refusal comes back as a failed receipt. An empty
+            # value means "keep the route default", so it is simply not sent.
+            effort=selection['reasoningEffort']
+            if not isinstance(effort,str) or not 0<len(effort)<=60:
+                raise Invalid('思考深度取值无效。')
         with self.store.connect() as db:
             binding=db.execute('SELECT session FROM native_bindings WHERE project=? AND agent=?',(project,agent)).fetchone()
             host=db.execute('SELECT seen FROM native_hosts WHERE agent=?',(agent,)).fetchone()
@@ -423,7 +431,7 @@ class Runtime:
             job=uid('model')
             body={'kind':operation}
             if operation=='model-select':
-                body['selection']={k:selection[k] for k in ('provider','model')}
+                body['selection']={k:selection[k] for k in ('provider','model','reasoningEffort') if selection.get(k)}
             db.execute('INSERT INTO native_jobs VALUES(?,?,?,?,?,?,?,?)',(job,project,agent,binding[0],None,'queued',json.dumps(body,ensure_ascii=False),time.time()))
         return {'id':job,'status':'queued'}
 

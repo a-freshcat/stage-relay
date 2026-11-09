@@ -166,16 +166,29 @@ async function nativeCommand(agentId,operation,selection) {
   }
   throw new Error('等待原应用回执超时，请在原生活动中查看结果。不会自动重复发送。');
 }
+function effortField(models,index) {
+  const model=models[Number(index)];
+  if(!model?.efforts?.length) return '';
+  return `<label class="field-label" for="native-effort">思考深度</label><select class="input" id="native-effort" name="native_effort">${model.efforts.map(e=>`<option value="${esc(e)}"${e===model.effortDefault?' selected':''}>${esc(e)}${e===model.effortDefault?'（默认）':''}</option>`).join('')}</select>`;
+}
 async function chooseNativeModel(agentId) {
   toast('正在从原应用读取可用模型…');
   const result=await nativeCommand(agentId,'model-catalog');
   if(!result?.models?.length) throw new Error('原应用没有返回可用模型。');
   const models=result.models;
-  openModal('选择原生会话使用的模型',`<p class="modal-lead">模型列表来自原应用。只更改此绑定会话的模型；应用的全局默认设置保留。正在执行时会等待会话空闲。</p><select class="input" name="native_model">${models.map((m,index)=>`<option value="${index}">${esc(m.label)} · ${esc(m.model)}</option>`).join('')}</select>${formActions('设置此会话模型')}`,async form=>{
+  // An effort list comes from the same route info the app validates a request
+  // against, so only supported depths appear; a route without reasoning support
+  // shows no selector rather than a choice that would be refused later.
+  openModal('选择原生会话使用的模型',`<p class="modal-lead">模型列表来自原应用。只更改此绑定会话的模型与思考深度；应用的全局默认设置保留。正在执行时会等待会话空闲。</p><select class="input" name="native_model">${models.map((m,index)=>`<option value="${index}">${esc(m.label)} · ${esc(m.model)}</option>`).join('')}</select><div id="native-effort-slot">${effortField(models,0)}</div>${formActions('设置此会话模型')}`,async form=>{
     const selected=models[Number(new FormData(form).get('native_model'))];
     if(!selected) throw new Error('请选择模型');
-    await nativeCommand(agentId,'model-select',selected);closeModal();render();toast('原应用已确认：下次请求使用 '+selected.model);
+    const effort=new FormData(form).get('native_effort');
+    const payload=effort ? {...selected,reasoningEffort:effort} : selected;
+    await nativeCommand(agentId,'model-select',payload);closeModal();render();toast('原应用已确认：下次请求使用 '+selected.model+(effort?' · 深度 '+effort:''));
   });
+  const modelSelect=document.querySelector('.modal select[name="native_model"]');
+  const slot=document.getElementById('native-effort-slot');
+  if(modelSelect && slot) modelSelect.addEventListener('change',()=>{slot.innerHTML=effortField(models,modelSelect.value);});
 }
 function nativeActivity(agentId) {
   const binding=state.runtime?.bindings?.find(b=>b.project===current().id && b.agent===agentId);
