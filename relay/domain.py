@@ -728,9 +728,20 @@ class Store:
                 result = stage
             else:
                 self._ready(p)
-                if not p["summary_requested"] or p["paused"]:
+                # A supervisor that is also the reporter was told to "submit
+                # directly", so requiring a prior request would deadlock it: the
+                # request is refused for asking yourself. Submitting on your own
+                # authority is allowed for exactly that case, and only once.
+                supervisor_is_reporter = actor == p["assignments"]["planner"]
+                if p["paused"]:
+                    raise Invalid("任务已暂停，暂不能提交汇总。")
+                if not p["summary_requested"] and not supervisor_is_reporter:
                     raise Invalid("用户尚未派发汇总，或任务已暂停。")
-                p["summary"] = {"body": text(a.get("body"), "汇总", 30000), "actor": actor, "created": now()}
+                if p["summary"] and supervisor_is_reporter and not p["summary_requested"]:
+                    raise Invalid("本阶段汇总已提交；返修后请按新增阶段再汇总。")
+                p["summary"] = {"body": text(a.get("body"), "汇总", 30000), "actor": actor,
+                                "created": now(),
+                                "self_submitted": bool(supervisor_is_reporter and not p["summary_requested"])}
                 detail.update(text="汇总负责人提交了交付说明")
                 result = p["summary"]
         else:

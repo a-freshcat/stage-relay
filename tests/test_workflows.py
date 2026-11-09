@@ -200,6 +200,45 @@ class Workflows(unittest.TestCase):
             self.act("summary_request", "codex", issue_id=i["id"])
         self.assertIn("未验收", str(raised.exception))
 
+    def test_supervisor_who_is_reporter_can_submit_directly(self):
+        """The hinted path must actually work, not deadlock on a refused request."""
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        t = self.review_ready()
+        self.act("review", "codex", task_id=t["id"], approved=True, evidence="核验通过")
+        i = self.issue()
+        self.act("resolve", issue_id=i["id"], choice=i["options"][0]["id"])
+        with self.assertRaises(Invalid) as asked:
+            self.act("summary_request", "codex")
+        self.assertIn("直接提交", str(asked.exception))
+        # The refusal above must not leave the submit path blocked.
+        summary = self.act("summary_submit", "codex", body="自行提交的阶段说明")
+        self.assertTrue(summary["body"])
+        self.assertTrue(summary.get("self_submitted"))
+        # Doing it twice without a new stage is not a second summary.
+        with self.assertRaises(Invalid):
+            self.act("summary_submit", "codex", body="重复提交")
+
+    def test_a_completed_stage_is_summarisable_while_another_issue_is_open(self):
+        done = self.review_ready()
+        self.act("review", "codex", task_id=done["id"], approved=True, evidence="核验通过")
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "antigravity"})
+        finished = self.issue()
+        self.act("resolve", issue_id=finished["id"], choice=finished["options"][0]["id"])
+        # A second issue stays open, so the project as a whole is not ready.
+        still_open = self.issue()
+        with self.assertRaises(Invalid):
+            self.act("summary_request", "codex")
+        stage = self.act("summary_request", "codex", issue_id=finished["id"])
+        self.assertEqual(stage["issue_id"], finished["id"])
+        self.act("summary_submit", "antigravity", stage_id=stage["id"], body="第一阶段")
+        # The open issue blocks its own stage, not the finished one.
+        with self.assertRaises(Invalid):
+            self.act("summary_request", "codex", issue_id=still_open["id"])
+        stages = self.project()["stages"]
+        self.assertEqual([s["status"] for s in stages], ["submitted"])
+
     def test_supervisor_can_request_a_stage_summary(self):
         """The role that judges a stage finished is the role that must ask."""
         # Supervisor and reporter must be different people, otherwise the

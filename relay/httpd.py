@@ -36,7 +36,12 @@ SETTINGS_KINDS = {
     "scratch": "已删除项目的临时目录",
 }
 
-AGENT_ACTIONS = {"connect", "report", "review", "issue_create", "message", "project_message", "summary_submit"}
+# Actions a member may take through its own bridge. `summary_request` belongs
+# here because the progress supervisor is a member, and the store still checks
+# the role: user, or the current planner. Without it the MCP tool was
+# unreachable even though everything behind it was implemented.
+AGENT_ACTIONS = {"connect", "report", "review", "issue_create", "message", "project_message",
+                 "summary_submit", "summary_request"}
 
 
 class PanelServer(ThreadingHTTPServer):

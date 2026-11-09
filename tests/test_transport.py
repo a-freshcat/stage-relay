@@ -102,6 +102,37 @@ class Transport(unittest.TestCase):
         self.assertFalse(reply["result"]["isError"])
         self.assertEqual(self.store.snapshot()["projects"][0]["summary"]["actor"],"antigravity")
 
+    def test_stage_summary_tools_carry_the_scope_through_mcp(self):
+        """`issue_id` and `stage_id` must reach the store, not be swallowed."""
+        self.user("assign",assignments={"planner":"codex","executor":"deepseek",
+                                       "reporter":"antigravity"})
+        status,data,_=self.user("task_create",title="阶段板块",owner="deepseek",
+                                acceptance="测试可核对")
+        task_id=json.loads(data)["result"]["id"]
+        self.user("dispatch")
+        self.mcp("deepseek",[("relay_report",{"project_id":self.p["id"],"task_id":task_id,
+                                             "status":"review","evidence":"提交检查结果"})])
+        self.mcp("codex",[("relay_review",{"project_id":self.p["id"],"task_id":task_id,
+                                          "approved":True,"evidence":"独立核对通过"})])
+        status,data,_=self.user("issue_create",title="阶段一",body="问题",
+                                members=["codex","deepseek"],
+                                options=[{"title":"A","detail":"a"},{"title":"B","detail":"b"}])
+        issue=json.loads(data)["result"]
+        self.user("resolve",issue_id=issue["id"],choice=issue["options"][0]["id"])
+        # The supervisor asks for one stage, not the whole project.
+        asked=self.mcp("codex",[("relay_request_summary",{"project_id":self.p["id"],
+                                                          "issue_id":issue["id"]})])[0]
+        self.assertFalse(asked["result"]["isError"],asked)
+        stage=json.loads(asked["result"]["content"][0]["text"])
+        self.assertEqual(stage["issue_id"],issue["id"])
+        self.assertEqual(stage["revision"],1)
+        # The reporter answers against that stage id.
+        replied=self.mcp("antigravity",[("relay_stage_summary",{
+            "project_id":self.p["id"],"stage_id":stage["id"],"body":"阶段一完成"} )])[0]
+        self.assertFalse(replied["result"]["isError"],replied)
+        stages=self.store.snapshot()["projects"][0]["stages"]
+        self.assertEqual([s["status"] for s in stages],["submitted"])
+
     def test_on_demand_reads_work_over_mcp(self):
         status, data, _ = self.user("task_create", title="按需读取", owner="deepseek",
                                     acceptance="证据可完整取回")

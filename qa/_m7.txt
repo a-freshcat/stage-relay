@@ -1,0 +1,28 @@
+0.1.7: the stage-summary path is actually reachable, and a supervisor who is also the reporter can submit
+
+Codex reviewed 0.1.5 and was right about two severed links that 0.1.6 had not
+closed. Both were real.
+
+The supervisor could not reach the request at all. `summary_request` was missing
+from `AGENT_ACTIONS`, so the bridge answered "members cannot perform user
+decisions" before the store ever saw it — the MCP tool existed and nothing behind
+it was reachable. It is now in that set; the store still enforces the role.
+
+A supervisor who is also the reporter deadlocked. The request was correctly
+refused with "submit directly", and the submit path then demanded a prior request
+that could never exist. Submitting on your own authority is now allowed for
+exactly that case, once, and recorded as `self_submitted` so it is not mistaken
+for a user-dispatched summary.
+
+Stage scope is carried end to end: `issue_id` selects the stage, the entry is
+persisted with a revision, a second submission on the same revision is refused,
+and a different stage keeps its own history instead of overwriting `p.summary`.
+
+Verified through the real MCP bridge on the deployed build, not just in tests:
+supervisor requests a stage over `relay_request_summary`, the reply carries the
+issue id and revision 1, the reporter submits over `relay_stage_summary`, the
+stage is persisted as submitted, and a repeat submission is refused. Fixture
+projects were closed and recycled through the normal flow; the real project,
+its bindings and its chat are unchanged.
+
+Tests: 164 run, 1 skipped.
