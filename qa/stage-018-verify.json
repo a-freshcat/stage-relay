@@ -1,0 +1,183 @@
+[
+ {
+  "check": "panel is 0.1.8",
+  "ok": true,
+  "detail": {
+   "app": "stage-relay",
+   "version": "0.1.8",
+   "pid": 18384,
+   "data_dir": "C:\\Users\\handsomeboys\\Documents\\ChatGPT\\new_subagent\\release\\StageRelay-0.3.1-codex-dsh\\Stage Relay\\data",
+   "bridge_refresh": [
+    {
+     "agent": "codex",
+     "repointed": true,
+     "path": "C:\\Users\\handsomeboys\\.codex\\config.toml",
+     "backup": "C:\\Users\\handsomeboys\\.codex\\config.toml.stage-relay-1794225958200983600.bak"
+    },
+    {
+     "agent": "deepseek",
+     "repointed": true,
+     "path": "C:\\Users\\handsomeboys\\.dsh\\profiles\\desktop\\cordis.patch.yml",
+     "backup": "C:\\Users\\handsomeboys\\.dsh\\profiles\\desktop\\cordis.patch.yml.stage-relay-1794225958668143200.bak"
+    }
+   ]
+  }
+ },
+ {
+  "check": "catalogue advertises relay_stages",
+  "ok": true,
+  "detail": [
+   "relay_event",
+   "relay_inbox",
+   "relay_issue",
+   "relay_list",
+   "relay_message",
+   "relay_project",
+   "relay_project_message",
+   "relay_raise_issue",
+   "relay_report",
+   "relay_request_summary",
+   "relay_review",
+   "relay_rules",
+   "relay_send_message",
+   "relay_stage_summary",
+   "relay_stages",
+   "relay_submit_summary",
+   "relay_task"
+  ]
+ },
+ {
+  "check": "relay_stages is read-only",
+  "ok": true,
+  "detail": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  }
+ },
+ {
+  "check": "catalogue advertises issue-scoped stage submit",
+  "ok": true,
+  "detail": {
+   "type": "object",
+   "properties": {
+    "project_id": {
+     "type": "string"
+    },
+    "stage_id": {
+     "type": "string"
+    },
+    "issue_id": {
+     "type": "string"
+    },
+    "body": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "project_id",
+    "body"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "check": "fixture project created",
+  "ok": true,
+  "detail": null
+ },
+ {
+  "check": "member reports over the real bridge",
+  "ok": true,
+  "detail": "{\"id\": \"task_88ac53756776\", \"title\": \"核验板块\", \"acceptance\": \"命令与结果可核对\", \"owner\": \"deepseek\", \"status\": \"review\", \"evidence\": \"真实桥提交：python -m pytest tests -q → 169 passed\", \"review\": \"\", \"dispatched\": "
+ },
+ {
+  "check": "supervisor reviews over the real bridge",
+  "ok": true,
+  "detail": "{\"id\": \"task_88ac53756776\", \"title\": \"核验板块\", \"acceptance\": \"命令与结果可核对\", \"owner\": \"deepseek\", \"status\": \"done\", \"evidence\": \"真实桥提交：python -m pytest tests -q → 169 passed\", \"review\": \"独立核对：pytest 输出与文件改动"
+ },
+ {
+  "check": "supervisor==reporter without body is refused with a usable message",
+  "ok": true,
+  "detail": "你同时是汇总负责人：请带上 body，一次完成这个阶段的汇总。"
+ },
+ {
+  "check": "supervisor==reporter records the stage in one call",
+  "ok": true,
+  "detail": "{\"id\": \"stage_09fe2b81957f\", \"issue_id\": \"issue_d1663d7509ad\", \"title\": \"阶段一：工具发现与正文查看\", \"task_ids\": [], \"revision\": 1, \"requested_by\": \"codex\", \"requested\": \"2026-11-09T12:06:20+00:00\", \"status\": \"submitted\", \"body\": \"阶段一完成：工具目录已含 relay_stages；正文与全部历史可从面板打开。\", \"submitted\": \"2026-11-09T12:06:20+00:0"
+ },
+ {
+  "check": "the recorded stage is submitted and marked self-submitted",
+  "ok": true,
+  "detail": "submitted"
+ },
+ {
+  "check": "relay_stages returns the stage with its body",
+  "ok": true,
+  "detail": 1
+ },
+ {
+  "check": "relay_stages reports no outstanding resolved issue",
+  "ok": true,
+  "detail": []
+ },
+ {
+  "check": "a second direct submission is refused",
+  "ok": true,
+  "detail": "这个议题的阶段汇总已提交（第 1 版）；返修后请由监督按该议题发一次新的阶段请求。"
+ },
+ {
+  "check": "the panel state carries the persisted stage",
+  "ok": true,
+  "detail": [
+   [
+    "submitted",
+    1
+   ]
+  ]
+ },
+ {
+  "check": "the stage body reached the panel too",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "check": "a reporter records a stage from the issue alone",
+  "ok": true,
+  "detail": "{\"id\": \"stage_622ae4dd0982\", \"issue_id\": \"issue_99a5dc7ddb8e\", \"title\": \"阶段二：直接按议题记录\", \"task_ids\": [], \"revision\": 1, \"requested_by\": \"antigravity\", \"requested\": null, \"status\": \"submitted\", \"body\": \"阶段二：报告人直接按议题建立并提交了阶段记录。\", \"submitted\": \"2026-11-09T12:06:22+00:00\", \"actor\": \"antigravity\", \"self_su"
+ },
+ {
+  "check": "repeating it is refused rather than adding a revision",
+  "ok": true,
+  "detail": "这个议题的阶段汇总已提交（第 1 版）；返修后请由监督按该议题发一次新的阶段请求。"
+ },
+ {
+  "check": "both stages persist with their own bodies",
+  "ok": true,
+  "detail": [
+   [
+    "issue_d1663d",
+    1,
+    true
+   ],
+   [
+    "issue_99a5dc",
+    1,
+    true
+   ]
+  ]
+ },
+ {
+  "check": "panel shows both stages",
+  "ok": true,
+  "detail": 2
+ },
+ {
+  "check": "fixture project removed from the active list",
+  "ok": true,
+  "detail": [
+   "project_4d8879b7ef2c",
+   "project_32d4b1956bda"
+  ]
+ }
+]

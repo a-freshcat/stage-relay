@@ -252,7 +252,7 @@ function decisions(p) {
     const index = i.options.findIndex(o => o.id === choice);
     const affected = p.tasks.filter(t => i.task_ids.includes(t.id));
     return `<article class="decision-card"><h3>调整实现方案</h3><div class="decision-context">关联议题：${esc(i.title)}</div>${i.options.map((o,j) => `<label class="option"><input type="radio" name="option-${i.id}" value="${o.id}" data-choice="${i.id}" ${o.id === choice ? 'checked' : ''}><span><span class="option-title">${String.fromCharCode(65+j)} &nbsp; ${esc(o.title)}</span><span class="option-detail">${esc(o.detail)}</span></span></label>`).join('')}<div class="decision-impact">${affected.length ? `影响：${esc(affected.map(t => t.title).join('、'))}暂缓，其他板块可继续` : '此议题未暂停工作板块'}</div>${btn('resolve',`确认 ${String.fromCharCode(65+index)} · 继续任务`,'play','primary full',`data-issue="${i.id}"`)}<div class="small-actions">${btn('supplement','补充要求','','',`data-issue="${i.id}"`)}${btn('open-issue','查看讨论依据','arrow','ghost',`data-issue="${i.id}"`)}</div></article>`;
-  }).join('') || `<div class="no-decision">${icon('check')}暂时没有需要你决定的事项<br>成员有分歧时会在这里提出</div>`}</section><section>${(p.stages || []).length ? `<section class="rail-section"><h2>阶段汇总</h2>${p.stages.filter(s => s.status === 'submitted' || s.status === 'requested').slice(-4).reverse().map(s => `<div class="reporter-row"><span>${esc(s.title || '已验收板块')} · 第 ${s.revision} 版 ${s.status === 'submitted' ? badge('已提交', 'green', 'check') : badge('等待汇总', 'blue', 'clock')}</span></div>`).join('')}</section>` : ''}<section class="rail-section"><h2>最终汇总</h2><div class="reporter-row"><span>负责人 &nbsp; <strong>${esc(name(p.assignments.reporter))}</strong></span>${btn('assign','更换','','')}</div><div class="checklist">${[['方案与决策记录',p.tasks.length > 0 && !open.length],['文件改动与检查结果',allDone],['未完成事项',!!p.summary]].map(([label,checked]) => `<div class="checklist-item"><span class="check-box${checked ? ' checked' : ''}">${checked ? icon('check') : ''}</span>${label}</div>`).join('')}<div class="checklist-foot">${p.summary ? '负责人已提交汇总，可查看交付记录' : ready ? '核验材料已齐全，可以派发汇总' : '材料齐全后，再交给负责人汇总'}</div></div><div class="stack rail-buttons">${p.summary ? btn('deliveries','查看交付说明','file','full') : btn('summary-request',p.summary_requested ? '汇总已派发 · 等待响应' : '交给负责人汇总','play','full',!ready || p.summary_requested || p.demo || p.paused ? 'disabled' : '')}${btn('export','导出当前记录','download','ghost full')}</div></section><div class="principle">${icon('info')}你决定方向，成员负责推进</div></aside>`;
+  }).join('') || `<div class="no-decision">${icon('check')}暂时没有需要你决定的事项<br>成员有分歧时会在这里提出</div>`}</section><section>${(p.stages || []).length ? `<section class="rail-section"><h2>阶段汇总</h2>${p.stages.slice(-4).reverse().map(s => `<div class="reporter-row"><span>${esc(s.title || '已验收板块')} · 第 ${s.revision} 版 ${s.status === 'submitted' ? badge('已提交', 'green', 'check') : badge('等待汇总', 'blue', 'clock')}</span>${s.status === 'submitted' ? btn('stage-view','正文','file','ghost',`data-stage="${s.id}"`) : ''}</div>`).join('')}${btn('stage-list',`全部阶段记录 · ${p.stages.length}`,'layers','ghost full')}</section>` : ''}<section class="rail-section"><h2>最终汇总</h2><div class="reporter-row"><span>负责人 &nbsp; <strong>${esc(name(p.assignments.reporter))}</strong></span>${btn('assign','更换','','')}</div><div class="checklist">${[['方案与决策记录',p.tasks.length > 0 && !open.length],['文件改动与检查结果',allDone],['未完成事项',!!p.summary]].map(([label,checked]) => `<div class="checklist-item"><span class="check-box${checked ? ' checked' : ''}">${checked ? icon('check') : ''}</span>${label}</div>`).join('')}<div class="checklist-foot">${p.summary ? '负责人已提交汇总，可查看交付记录' : ready ? '核验材料已齐全，可以派发汇总' : '材料齐全后，再交给负责人汇总'}</div></div><div class="stack rail-buttons">${p.summary ? btn('deliveries','查看交付说明','file','full') : btn('summary-request',p.summary_requested ? '汇总已派发 · 等待响应' : '交给负责人汇总','play','full',!ready || p.summary_requested || p.demo || p.paused ? 'disabled' : '')}${btn('export','导出当前记录','download','ghost full')}</div></section><div class="principle">${icon('info')}你决定方向，成员负责推进</div></aside>`;
 }
 function closedRail(p) {
   const resources = (state.runtime?.resources || []).filter(r => r.project === p.id);
@@ -643,6 +643,34 @@ function recordBin(){
     +section('议题',issues.map(i=>row('issue',i,i.title,i.status==='open'?'曾未解决':'已解决')),'没有回收的议题。')
     +section('工作板块',tasks.map(t=>row('task',t,t.title,t.status)),'没有回收的工作板块。'));
 }
+function stageMeta(s) {
+  const who = s.status === 'submitted' ? `${esc(name(s.actor || s.requested_by))} · ${esc(datetime(s.submitted))}` : `等待 ${esc(name(current().assignments.reporter))} 汇总 · ${esc(datetime(s.requested))}`;
+  return `<div class="row small muted">${appIcon(s.actor || s.requested_by,true)}${who}${s.self_submitted ? ' · 监督自行提交' : ''}</div>`;
+}
+function stageBody(s) {
+  return s.body ? `<pre>${esc(s.body)}</pre>` : '<p class="page-lead">这一阶段的汇总还没有正文。</p>';
+}
+// The rail lists recent titles only; a stage summary is a deliverable, so its
+// text and the whole history must be openable without reading the project record.
+function openStage(stageId) {
+  const p = current();
+  const s = (p.stages || []).find(s => s.id === stageId);
+  if (!s) return toast('找不到这条阶段汇总，请刷新。', true);
+  openModal(`阶段汇总 · ${s.title || '已验收板块'}`, `<div class="small muted">第 ${s.revision} 版 · 涉及 ${(s.task_ids || []).length} 个板块</div>${stageMeta(s)}${stageBody(s)}`);
+}
+function openStages() {
+  const p = current();
+  const stages = p.stages || [];
+  const summarised = new Set(stages.filter(s => s.status === 'submitted').map(s => s.issue_id));
+  const pending = p.issues.filter(i => !i.archived && i.status !== 'open' && !summarised.has(i.id));
+  const rows = stages.length
+    ? stages.slice().reverse().map(s => `<article class="delivery-panel"><div class="row between"><h2>${esc(s.title || '已验收板块')}</h2>${s.status === 'submitted' ? badge('已提交','green','check') : badge('等待汇总','blue','clock')}</div><div class="small muted">第 ${s.revision} 版 · 涉及 ${(s.task_ids || []).length} 个板块</div>${stageMeta(s)}${stageBody(s)}</article>`).join('')
+    : '<p class="page-lead">还没有阶段汇总。监督判断某一议题或一组板块完成时，可以只汇总这一段。</p>';
+  const gap = pending.length
+    ? `<div class="no-decision">${icon('info')}已解决但还没有阶段汇总的议题：${pending.map(i => esc(i.title)).join('、')}</div>`
+    : '';
+  openModal(`阶段汇总记录 · ${p.title}`, `<div class="small muted">共 ${stages.length} 条；下面是全部历史，不只是最近几条。</div>${gap}${rows}`);
+}
 const actions = {
   'close-project':closeProject,
   'settings-cleanup-preview':settingsCleanupPreview,
@@ -687,6 +715,8 @@ const actions = {
   },
   'resolve-discussion':async el => {await mutate('resolve',{issue_id:el.dataset.issue});toast('议题已解决。');},
   'summary-request':async () => {await mutate('summary_request');toast('汇总任务已加入负责人信箱。');},
+  'stage-view':el => openStage(el.dataset.stage),
+  'stage-list':openStages,
   'export':() => {const a=document.createElement('a');a.href=`/api/export?project=${encodeURIComponent(current().id)}`;a.download='stage-relay-report.md';a.click();},
   'popout':() => {const url=new URL(location.href);url.search=`?project=${current().id}&chat=popout&mode=${ui.chatMode}${ui.chatMode==='issue' && ui.issue ? `&issue=${ui.issue}` : ''}`;window.open(url.href,'_blank','noopener,noreferrer,width=620,height=850');},
   'back':() => {const url=new URL(location.href);url.search='';url.searchParams.set('project',current().id);location.href=url.href;},

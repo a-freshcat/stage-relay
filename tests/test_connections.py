@@ -37,11 +37,10 @@ class ConnectionSetup(unittest.TestCase):
         stale.write_text("", encoding="utf-8")
         same_args = ["--agent", "codex", "--port", "4318", "--data-dir", str(self.root / "data")]
         self.connections.owned = {"codex": {"entry": {"command": str(stale), "args": same_args}}}
-        # The old bridge still exists: keep the entry the user already approved.
-        self.assertEqual(self.connections.entry(self.codex)["command"], str(stale))
-        # The old package was deleted by an upgrade: the same contract still holds,
-        # so the current command is handed back instead of demanding re-setup.
-        stale.unlink()
+        # Same contract, but the entry must follow the running package: the bridge
+        # binary carries the tool catalogue, so a pinned old path would keep
+        # advertising old tools no matter how often the panel is reloaded.
+        self.assertEqual(self.connections.entry(self.codex), self.connections.current_entry(self.codex))
         entry = self.connections.entry(self.codex)
         self.assertIn(str(self.root / "data"), " ".join(entry["args"]))
         self.assertNotEqual(entry["command"], str(stale))
@@ -54,6 +53,29 @@ class ConnectionSetup(unittest.TestCase):
         entry = self.connections.entry(self.codex)
         self.assertNotEqual(entry["command"], "x")
         self.assertNotIn(other, " ".join(entry["args"]))
+
+    def test_a_stale_bridge_path_is_repointed_without_reauthorizing(self):
+        """Upgrading must actually fix the file, not only the value we report."""
+        target = self.home / ".codex/config.toml"
+        self.write(target, "model = \"keep\"\n")
+        stale = self.root / "old-package" / "StageRelayBridge.exe"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("", encoding="utf-8")
+        self.connections.owned = {"codex": {"entry": {
+            "command": str(stale),
+            "args": ["--agent", "codex", "--port", "4318", "--data-dir", str(self.root / "data")]}}}
+        result = self.connections.refresh(self.codex)
+        self.assertTrue(result["configured"])
+        written = tomllib.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(written["model"], "keep")
+        command = written["mcp_servers"]["stage-relay-codex"]["command"]
+        self.assertNotEqual(command, str(stale))
+        self.assertEqual(command, self.connections.current_entry(self.codex)["command"])
+        # Already current: refreshing again writes nothing and touches no file.
+        self.assertIsNone(self.connections.refresh(self.codex))
+        # No recorded authorization at all: nothing to repoint.
+        self.connections.owned = {}
+        self.assertIsNone(self.connections.refresh(self.codex))
 
     def test_prepare_does_not_write_or_require_manual_config(self):
         plan = self.connections.prepare(self.codex)

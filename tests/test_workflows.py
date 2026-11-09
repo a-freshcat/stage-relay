@@ -208,16 +208,53 @@ class Workflows(unittest.TestCase):
         self.act("review", "codex", task_id=t["id"], approved=True, evidence="核验通过")
         i = self.issue()
         self.act("resolve", issue_id=i["id"], choice=i["options"][0]["id"])
+        # Asking yourself is still refused at project scope, and the refusal says
+        # which call to make instead.
         with self.assertRaises(Invalid) as asked:
             self.act("summary_request", "codex")
         self.assertIn("直接提交", str(asked.exception))
-        # The refusal above must not leave the submit path blocked.
-        summary = self.act("summary_submit", "codex", body="自行提交的阶段说明")
+        # At stage scope the same caller is not refused: one call records the
+        # stage, because a supervisor who reports has nobody to ask.
+        with self.assertRaises(Invalid) as no_body:
+            self.act("summary_request", "codex", issue_id=i["id"])
+        self.assertIn("body", str(no_body.exception))
+        stage = self.act("summary_request", "codex", issue_id=i["id"],
+                         body="兼任者直接写下的阶段说明")
+        self.assertEqual(stage["status"], "submitted")
+        self.assertEqual(stage["body"], "兼任者直接写下的阶段说明")
+        self.assertTrue(stage.get("self_submitted"))
+        self.assertEqual(stage["revision"], 1)
+        # The project-wide self-submit path still works and stays separate.
+        summary = self.act("summary_submit", "codex", body="自行提交的最终说明")
         self.assertTrue(summary["body"])
         self.assertTrue(summary.get("self_submitted"))
         # Doing it twice without a new stage is not a second summary.
         with self.assertRaises(Invalid):
             self.act("summary_submit", "codex", body="重复提交")
+
+    def test_a_stage_can_be_recorded_straight_from_its_issue(self):
+        """The reporter must not need a request it cannot receive."""
+        done = self.review_ready()
+        self.act("review", "codex", task_id=done["id"], approved=True, evidence="核验通过")
+        i = self.issue()
+        self.act("resolve", issue_id=i["id"], choice=i["options"][0]["id"])
+        # The reporter names the issue itself, with no prior stage_id.
+        stage = self.act("summary_submit", "codex", issue_id=i["id"], body="直接按议题汇总")
+        self.assertEqual(stage["status"], "submitted")
+        self.assertEqual(stage["issue_id"], i["id"])
+        self.assertEqual(stage["revision"], 1)
+        saved = self.project()["stages"]
+        self.assertEqual([(s["issue_id"], s["status"]) for s in saved],
+                         [(i["id"], "submitted")])
+        # A second direct call must not invent revision 2 behind the panel's back.
+        with self.assertRaises(Invalid) as twice:
+            self.act("summary_submit", "codex", issue_id=i["id"], body="再来一次")
+        self.assertIn("新的阶段请求", str(twice.exception))
+        self.assertEqual(len(self.project()["stages"]), 1)
+        # An open issue has no stage yet, so it is refused rather than recorded.
+        still_open = self.issue()
+        with self.assertRaises(Invalid):
+            self.act("summary_submit", "codex", issue_id=still_open["id"], body="未解决")
 
     def test_a_mention_inside_code_is_not_a_mention(self):
         """Talking about `@codex` must not route to codex, nor be refused."""

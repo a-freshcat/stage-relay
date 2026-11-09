@@ -1,0 +1,30 @@
+0.1.8: a stage summary can be recorded by the role that has to record it
+
+Three gaps Codex measured on 7047611 were real, and the tool-discovery one had a
+cause neither of us had named: the bridge binary *is* the tool catalogue, and an
+authorized entry kept pointing at the package that was running when the user
+consented. Rebuilding and reloading could never surface a new tool.
+
+- domain: summary_request with issue_id is no longer refused for a supervisor who
+  also reports; that caller must pass body and the same call becomes the stage
+  record (self_submitted). Project scope keeps the "submit instead" hint.
+- domain: summary_submit accepts issue_id alone, so a reporter records a stage
+  without waiting for a request it cannot receive. A second call is refused
+  rather than quietly inventing revision 2.
+- domain: read_stages returns every stage with its body plus the resolved issues
+  nobody has summarised yet; _state() now defaults stages so an absent key stops
+  reading as "this build cannot do stages".
+- mcp: relay_stages (read-only) and issue_id on relay_stage_summary.
+- connections: the journal records consent (agent, port, store); the executable
+  follows the running package and is repointed once per start, with a backup.
+  os.replace is retried like the cleanup path instead of failing on WinError 5.
+- web: 阶段汇总 rows get 正文 and 全部阶段记录 (all history, each body, the
+  outstanding resolved issues); self-submitted stages say so.
+- rules: the stage tools are named where the summary role is described.
+
+Verification, against 4318 running 0.1.8 from the real data dir:
+  python -m pytest tests -q        -> 169 passed, 1 skipped
+  node qa/ui_probe.mjs             -> ALL UI CHECKS PASSED
+  python qa/stage_full_verify.py   -> 20/20 over the packaged StageRelayBridge.exe
+  real project record via relay_stages -> total 0, pending_stages lists
+  issue_05a98577b535 (the one resolved issue still owed a stage)

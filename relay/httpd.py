@@ -73,7 +73,34 @@ class PanelServer(ThreadingHTTPServer):
         self.refresh_credentials()
         self.codex=CodexManager(self,enabled=connection_home is None)
         threading.Thread(target=self.codex.restore,daemon=True,name='RestoreNativeCodex').start()
+        # Before anything can read the catalogue: an authorized member must not
+        # keep loading an older bridge just because that path was recorded once.
+        self.bridge_refresh = self.repoint_bridges()
         self.register_scratch()
+
+    def repoint_bridges(self):
+        """Make already-authorized members load this package's bridge.
+
+        The bridge process is what advertises the tool list to the application, so
+        an entry left pointing at an older package keeps serving an older tool
+        catalogue — the user reinstalls, reloads, and still sees `relay_submit_
+        summary` only. Each member is re-pointed once per start, with a backup,
+        and only when its recorded consent still names this port and store. Any
+        failure is reported, never fatal: the panel must start either way.
+        """
+        moved = []
+        for agent in self.store.snapshot()["agents"]:
+            if not (agent.get("setup") or {}).get("configured"):
+                continue
+            try:
+                result = self.connections.refresh(agent)
+            except (Invalid, OSError, ValueError) as exc:
+                moved.append({"agent": agent["id"], "repointed": False, "error": str(exc)})
+                continue
+            if result:
+                moved.append({"agent": agent["id"], "repointed": True,
+                              "path": result.get("path"), "backup": result.get("backup")})
+        return moved
 
     def register_scratch(self):
         """Create scratch only where the ownership marker proves it is ours.
@@ -219,6 +246,7 @@ class Handler(BaseHTTPRequestHandler):
                     "version": __version__,
                     "pid": os.getpid(),
                     "data_dir": str(self.server.store.path.parent),
+                    "bridge_refresh": getattr(self.server, "bridge_refresh", []),
                 })
                 return
             if path.startswith("/api/"):
@@ -342,6 +370,10 @@ class Handler(BaseHTTPRequestHandler):
                     result = self.server.store.read_list(actor, args.get("project_id"), args.get("kind"),
                                                          args.get("offset", 0), args.get("limit", 50),
                                                          args.get("issue_id"))
+                elif action == "read_stages":
+                    args = body.get("args", {})
+                    result = self.server.store.read_stages(actor, args.get("project_id"),
+                                                           args.get("stage_id"))
                 elif action == "read_event":
                     args = body.get("args", {})
                     result = self.server.store.read_event(actor, args.get("project_id"), args.get("seq"))

@@ -96,6 +96,10 @@ class Store:
         state = json.loads(raw) if isinstance(raw, str) else raw
         for project in state.get("projects", []):
             project.setdefault("chat", [])
+            # A project that has never had a stage summarised must still say so:
+            # an absent key reads as "this version cannot do stages" rather than
+            # "no stage exists yet".
+            project.setdefault("stages", [])
             project.setdefault('review_epoch',0)
             project.setdefault("closed", False)
             project.setdefault("closed_at", None)
@@ -264,6 +268,32 @@ class Store:
             "next_offset": offset + len(page) if offset + len(page) < len(items) else None,
             "items": page,
             "note": "这是分页结果，不是全部；按 next_offset 继续读取，或直接用 relay_task / relay_issue / relay_message 取指定对象。",
+        }
+
+    def read_stages(self, agent_id, project_id, stage_id=None):
+        """Every stage summary of one project, with its full body.
+
+        The panel shows a few recent titles; a member that has to check what was
+        persisted needs the whole history and the text, so this returns both and
+        also names the resolved issues nobody has summarised yet — that is the
+        work a supervisor still owes.
+        """
+        project = self.readable(agent_id, project_id)
+        stages = list(project.get("stages", []))
+        if stage_id:
+            one = get(stages, stage_id, "阶段汇总")
+            return one
+        summarised = {s.get("issue_id") for s in stages if s.get("submitted")}
+        pending = [{"id": i["id"], "title": i["title"], "task_ids": i.get("task_ids", []),
+                    "resolved": i.get("resolved") or i.get("created")}
+                   for i in project.get("issues", [])
+                   if not i.get("archived") and i["status"] != "open" and i["id"] not in summarised]
+        return {
+            "project_id": project_id, "total": len(stages), "stages": stages,
+            "final_summary": project.get("summary"),
+            "pending_stages": pending,
+            "note": ("stages 是全部阶段记录（含正文）；pending_stages 是已解决但还没有阶段汇总的议题。"
+                     "提交阶段汇总用 relay_stage_summary，传 issue_id 即可当场建立，或传 stage_id 回答监督的请求。"),
         }
 
     def read_event(self, agent_id, project_id, seq):
@@ -673,13 +703,14 @@ class Store:
         elif action == "summary_request":
             reporter = p["assignments"]["reporter"]
             # The user may always ask. Otherwise only the progress supervisor may,
-            # because that is the role that judges a stage finished — and asking
-            # yourself is meaningless, since the reporter is who has to answer.
-            if actor != "user":
-                if actor != p["assignments"]["planner"]:
-                    raise Invalid("只有用户或当前进度监督可以请求阶段汇总。")
-                if actor == reporter:
-                    raise Invalid("你同时是汇总负责人，不需要向自己请求汇总；请直接提交。")
+            # because that is the role that judges a stage finished. A supervisor
+            # who also reports is the one caller that must not be turned away:
+            # "ask yourself" was refused, and refusing it here too left that role
+            # with no way to record a stage at all. So for that caller the same
+            # call becomes the submission, which is why `body` is accepted.
+            if actor != "user" and actor != p["assignments"]["planner"]:
+                raise Invalid("只有用户或当前进度监督可以请求阶段汇总。")
+            self_only = actor == reporter
             if p["paused"]:
                 raise Invalid("请先恢复派发。")
             stage = a.get("issue_id") or None
@@ -695,14 +726,25 @@ class Store:
                          "revision": revision, "requested_by": actor,
                          "requested": now(), "status": "requested",
                          "body": "", "submitted": None, "actor": None}
+                body = a.get("body")
+                if self_only:
+                    if not isinstance(body, str) or not body.strip():
+                        raise Invalid("你同时是汇总负责人：请带上 body，一次完成这个阶段的汇总。")
+                    entry.update(body=text(body, "阶段汇总", 30000), status="submitted",
+                                 submitted=now(), actor=actor, self_submitted=True)
                 p.setdefault("stages", []).append(entry)
-                detail.update(text=f"进度监督判断阶段完成，请整理阶段汇总："
-                                    f"{entry['title'] or '已验收板块'}",
+                detail.update(text=(f"阶段汇总已提交：{entry['title'] or '已验收板块'}" if self_only else
+                                    f"进度监督判断阶段完成，请整理阶段汇总：{entry['title'] or '已验收板块'}"),
                               requested_by=actor, issue_id=stage,
                               stage_id=entry["id"], stage_revision=revision,
-                              task_ids=entry["task_ids"], recipients=[reporter])
+                              task_ids=entry["task_ids"],
+                              recipients=[] if self_only else [reporter])
                 result = entry
             else:
+                if self_only:
+                    # Project scope has a real target to submit to, so the request
+                    # is still pointless: say which call does the work.
+                    raise Invalid("你同时是汇总负责人，不需要向自己请求汇总；请直接提交。")
                 self._ready(p)
                 if p["summary_requested"]:
                     raise Invalid("已请求汇总，请等待负责人响应。")
@@ -714,9 +756,32 @@ class Store:
             if actor != p["assignments"]["reporter"]:
                 raise Invalid("只有当前汇总负责人可提交汇总。")
             stage_id = a.get("stage_id")
+            if not stage_id and a.get("issue_id"):
+                # Submitting straight against an issue: the reporter — and the
+                # supervisor who also reports — names the stage itself instead of
+                # waiting for a request it is not allowed to send to itself. The
+                # record is created here, so it persists exactly like a requested
+                # one and the panel lists it the same way. A stage already
+                # summarised stays as it is: a second call must not quietly add a
+                # revision, so rework goes through an explicit new request.
+                issue_id = a["issue_id"]
+                earlier = [s for s in p.get("stages", [])
+                           if s.get("issue_id") == issue_id and s.get("submitted")]
+                if earlier:
+                    raise Invalid(f"这个议题的阶段汇总已提交（第 {earlier[-1]['revision']} 版）；"
+                                  f"返修后请由监督按该议题发一次新的阶段请求。")
+                scope, issue = self._stage_ready(p, issue_id)
+                stage = {"id": uid("stage"), "issue_id": issue_id,
+                         "title": issue["title"] if issue else "",
+                         "task_ids": [t["id"] for t in scope], "revision": 1,
+                         "requested_by": actor, "requested": None, "status": "submitted",
+                         "body": "", "submitted": None, "actor": None,
+                         "self_submitted": actor == p["assignments"]["planner"]}
+                stage_id = stage["id"]
+                p.setdefault("stages", []).append(stage)
             if stage_id:
                 stage = get(p.get("stages", []), stage_id, "阶段汇总")
-                if stage["status"] == "submitted":
+                if stage["status"] == "submitted" and stage.get("submitted"):
                     raise Invalid("该阶段已有汇总；返修后请按新修订再提交。")
                 if p["paused"]:
                     raise Invalid("任务已暂停，暂不能提交阶段汇总。")

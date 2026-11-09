@@ -132,6 +132,66 @@ class Transport(unittest.TestCase):
         self.assertFalse(replied["result"]["isError"],replied)
         stages=self.store.snapshot()["projects"][0]["stages"]
         self.assertEqual([s["status"] for s in stages],["submitted"])
+        # The persisted record is readable as a whole, with the body, through MCP.
+        listing=self.mcp("antigravity",[("relay_stages",{"project_id":self.p["id"]})])[0]
+        self.assertFalse(listing["result"]["isError"],listing)
+        view=json.loads(listing["result"]["content"][0]["text"])
+        self.assertEqual(view["total"],1)
+        self.assertEqual(view["stages"][0]["body"],"阶段一完成")
+        self.assertEqual(view["pending_stages"],[])
+
+    def test_a_supervisor_who_reports_records_a_stage_in_one_mcp_call(self):
+        """The combined role must have a working path, not only a hint."""
+        self.user("assign",assignments={"planner":"codex","executor":"deepseek",
+                                       "reporter":"codex"})
+        status,data,_=self.user("task_create",title="兼任板块",owner="deepseek",
+                                acceptance="可核对")
+        task_id=json.loads(data)["result"]["id"]
+        self.user("dispatch")
+        self.mcp("deepseek",[("relay_report",{"project_id":self.p["id"],"task_id":task_id,
+                                             "status":"review","evidence":"提交结果"})])
+        self.mcp("codex",[("relay_review",{"project_id":self.p["id"],"task_id":task_id,
+                                          "approved":True,"evidence":"核对通过"})])
+        status,data,_=self.user("issue_create",title="兼任阶段",body="问题",
+                                members=["codex","deepseek"],
+                                options=[{"title":"A","detail":"a"},{"title":"B","detail":"b"}])
+        issue=json.loads(data)["result"]
+        self.user("resolve",issue_id=issue["id"],choice=issue["options"][0]["id"])
+        # No body: the call is refused with a message that says what is missing.
+        empty=self.mcp("codex",[("relay_request_summary",{"project_id":self.p["id"],
+                                                         "issue_id":issue["id"]})])[0]
+        self.assertTrue(empty["result"]["isError"],empty)
+        self.assertIn("body",empty["result"]["content"][0]["text"])
+        # With the body it becomes the stage record itself.
+        done=self.mcp("codex",[("relay_request_summary",{
+            "project_id":self.p["id"],"issue_id":issue["id"],
+            "body":"兼任监督直接写下的阶段说明"})])[0]
+        self.assertFalse(done["result"]["isError"],done)
+        stage=json.loads(done["result"]["content"][0]["text"])
+        self.assertEqual(stage["status"],"submitted")
+        self.assertTrue(stage["self_submitted"])
+        saved=self.store.snapshot()["projects"][0]["stages"]
+        self.assertEqual(saved[0]["body"],"兼任监督直接写下的阶段说明")
+
+    def test_the_reporter_records_a_stage_from_the_issue_alone(self):
+        """A request the reporter cannot receive must not be a prerequisite."""
+        self.user("assign",assignments={"planner":"codex","executor":"deepseek",
+                                       "reporter":"antigravity"})
+        status,data,_=self.user("issue_create",title="无板块阶段",body="讨论",
+                                members=["codex","deepseek"],
+                                options=[{"title":"A","detail":"a"},{"title":"B","detail":"b"}])
+        issue=json.loads(data)["result"]
+        self.user("resolve",issue_id=issue["id"],choice=issue["options"][0]["id"])
+        replied=self.mcp("antigravity",[("relay_stage_summary",{
+            "project_id":self.p["id"],"issue_id":issue["id"],"body":"直接按议题汇总"} )])[0]
+        self.assertFalse(replied["result"]["isError"],replied)
+        stage=json.loads(replied["result"]["content"][0]["text"])
+        self.assertEqual((stage["issue_id"],stage["status"]),(issue["id"],"submitted"))
+        # A second direct call is refused rather than silently adding a revision.
+        again=self.mcp("antigravity",[("relay_stage_summary",{
+            "project_id":self.p["id"],"issue_id":issue["id"],"body":"再来一次"} )])[0]
+        self.assertTrue(again["result"]["isError"],again)
+        self.assertEqual(len(self.store.snapshot()["projects"][0]["stages"]),1)
 
     def test_on_demand_reads_work_over_mcp(self):
         status, data, _ = self.user("task_create", title="按需读取", owner="deepseek",
@@ -248,6 +308,28 @@ class Transport(unittest.TestCase):
         self.assertEqual(status,200)
         self.http("POST","/api/connection/commit",{"plan_id":json.loads(body)["plan_id"],"consent":True},headers)
         self.assertEqual(self.agent_http("inbox",agent="codex")[0],403)
+
+
+    def test_an_authorized_member_is_repointed_at_the_running_bridge(self):
+        """The tool list comes from the bridge binary, so its path must follow us."""
+        headers={"Cookie":self.cookie,"Content-Type":"application/json","X-Relay-Client":"panel"}
+        status,body,_=self.http("POST","/api/connection/prepare",{"agent_id":"codex"},headers)
+        plan=json.loads(body)
+        self.assertEqual(self.http("POST","/api/connection/commit",
+                                   {"plan_id":plan["plan_id"],"consent":True},headers)[0],200)
+        target=Path(self.temp.name)/"fake-home/.codex/config.toml"        # Simulate an upgrade: the journal still names a package that is gone.
+        old=str(Path(self.temp.name)/"old-package/StageRelayBridge.exe")
+        self.server.connections.owned["codex"]["entry"]["command"]=old
+        written=target.read_text(encoding="utf-8")
+        self.assertNotIn(old,written)
+        self.store.apply("setup_record",{"agent_id":"codex","configured":True,
+                                         "path":str(target)},"user")
+        moved=self.server.repoint_bridges()
+        self.assertEqual([m["agent"] for m in moved],["codex"])
+        self.assertTrue(moved[0]["repointed"])
+        self.assertNotIn(old,target.read_text(encoding="utf-8"))
+        # Running it again is a no-op: the entry already names this package.
+        self.assertEqual(self.server.repoint_bridges(),[])
 
 
 if __name__ == "__main__":

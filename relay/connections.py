@@ -19,6 +19,7 @@ import time
 import tomllib
 from pathlib import Path
 
+from .cleanup import atomic_replace
 from .domain import Invalid
 from .native_apps import application_target, dsh_runtime
 
@@ -39,28 +40,60 @@ class Connections:
         if self.journal.exists():
             self.owned = json.loads(self.journal.read_text(encoding="utf-8"))
 
-    def entry(self, agent):
-        # Keep an already-authorized bridge entry when an app update is installed
-        # side by side and its prior bridge still points at this same data store.
-        owned=self.owned.get(agent["id"],{}).get("entry")
-        if isinstance(owned,dict) and isinstance(owned.get("args"),list):
-            expected_args=["--agent",agent["id"],"--port",str(self.port),"--data-dir",str(self.data_dir)]
-            # An upgrade ships a new bridge path, so comparing the command would
-            # invalidate a perfectly good authorization and force a re-setup on
-            # every version bump. What matters is that the entry still targets
-            # this agent, this port and this data store.
-            if owned["args"]==expected_args:
-                command=str(owned.get("command",""))
-                if Path(command).is_file():
-                    return owned
-                # The recorded bridge was removed with an old package: fall
-                # through and hand back the current one for the same contract.
+    def current_entry(self, agent):
+        """The bridge this running package ships, for this agent and store."""
+        args = ["--agent", agent["id"], "--port", str(self.port), "--data-dir", str(self.data_dir)]
         if getattr(sys, "frozen", False):
             bridge = Path(sys.executable).resolve().parent / "StageRelayBridge.exe"
             if not bridge.is_file():
                 raise Invalid("协作桥文件缺失，请保留完整的应用文件夹。")
-            return {"command": str(bridge), "args": ["--agent", agent["id"], "--port", str(self.port), "--data-dir", str(self.data_dir)]}
-        return {"command": sys.executable, "args": [str(ROOT / "bridge.py"), "--agent", agent["id"], "--port", str(self.port), "--data-dir", str(self.data_dir)]}
+            return {"command": str(bridge), "args": args}
+        return {"command": sys.executable, "args": [str(ROOT / "bridge.py")] + args}
+
+    @staticmethod
+    def contract(args):
+        """The part of the bridge arguments the user actually approved.
+
+        `--agent`, `--port` and `--data-dir` decide which member, which panel and
+        which store: that is the authorization. The executable in front of them
+        is packaging, and comparing it would turn every upgrade into a request to
+        authorize again — while keeping it pinned would freeze the tool catalogue.
+        """
+        if not isinstance(args, list):
+            return None
+        found = {}
+        for index, item in enumerate(args[:-1]):
+            if item in {"--agent", "--port", "--data-dir"}:
+                found[item] = str(args[index + 1])
+        return found if len(found) == 3 else None
+
+    def entry(self, agent):
+        # The journal records *consent*: this agent, this port, this data store.
+        # The executable must follow the package that is running, not the package
+        # that was running when the user consented: the bridge binary carries the
+        # tool catalogue, so a pinned old bridge keeps advertising old tools and
+        # a newly added tool is invisible however often the panel is reloaded.
+        return self.current_entry(agent)
+
+    def refresh(self, agent):
+        """Re-point an already-authorized entry at this package's bridge.
+
+        Only the path changes; the approval the user gave stays valid, the file
+        is backed up first, and a failure leaves the existing configuration
+        untouched. Returns None when nothing needed to change.
+        """
+        owned = self.owned.get(agent["id"], {}).get("entry")
+        if not isinstance(owned, dict):
+            return None
+        current = self.current_entry(agent)
+        if self.contract(owned.get("args")) != self.contract(current["args"]):
+            return None
+        if str(owned.get("command")) == current["command"] and owned.get("args") == current["args"]:
+            return None
+        plan = self.prepare(agent)
+        return self.commit(plan["plan_id"], True)
+
+
 
     def target(self, agent):
         if agent["app"] == "codex":
@@ -190,7 +223,10 @@ class Connections:
             # Recheck just before replacing; never intentionally overwrite a stale plan.
             if (target.read_bytes() if target.exists() else b"") != current:
                 raise Invalid("应用同时修改了配置，接入未完成，请重新检测。")
-            temp.replace(target)
+            # A just-closed reader or an indexer can hold the target for a few
+            # milliseconds on Windows; the same retrying rename the cleanup path
+            # uses keeps an atomic write atomic without turning it into a failure.
+            atomic_replace(temp, target)
         finally:
             if temp.exists():
                 temp.unlink()

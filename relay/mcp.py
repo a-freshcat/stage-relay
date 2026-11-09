@@ -38,10 +38,11 @@ TOOLS = [
     {"name": "relay_project_message", "description": "向项目级群聊发送消息：没有议题时也能说明进度、提问或交接；只对当前项目成员可见，项目结束后只读。发消息不等于对方已运行。", "inputSchema": schema(PROJECT | {"body": STR}, ["project_id", "body"])},
     {"name": "relay_review", "description": "方案监督负责人核验其他成员的待审核板块。提供独立检查依据；不能核验自己的执行结果。分工切换后须从最新项目读取 review_epoch 并随请求提交。", "inputSchema": schema(PROJECT | {"task_id": STR, "approved": {"type": "boolean"}, "evidence": STR, "review_epoch": {"type":"integer","minimum":0}}, ["project_id", "task_id", "approved", "evidence"])},
     {"name": "relay_submit_summary", "description": "当前汇总负责人在用户派发汇总、所有板块核验通过且议题解决后，提交有依据的最终说明。", "inputSchema": schema(PROJECT | {"body": STR}, ["project_id", "body"])},
-    {"name": "relay_request_summary", "description": "进度监督判断某个阶段完成时，请汇总负责人做阶段汇总。传 issue_id 表示只汇总该议题及其关联板块，可在项目仍在推进时使用；不传则按全项目最终汇总，需所有板块验收且议题解决。只能由当前进度监督或用户发起；若你同时是汇总负责人则被拒绝（请直接提交）。不能代替用户验收。", "inputSchema": schema(PROJECT | {"issue_id": STR}, ["project_id"])},
-    {"name": "relay_stage_summary", "description": "汇总负责人提交某个阶段范围的汇总，需带 relay_request_summary 返回的 stage_id。同一阶段同一修订只接受一次；返修后按新修订再汇总。", "inputSchema": schema(PROJECT | {"stage_id": STR, "body": STR}, ["project_id", "stage_id", "body"])},
+    {"name": "relay_request_summary", "description": "进度监督判断某个阶段完成时，请汇总负责人做阶段汇总。传 issue_id 表示只汇总该议题及其关联板块，可在项目仍在推进时使用；不传则按全项目最终汇总，需所有板块验收且议题解决。只能由当前进度监督或用户发起。若你同时是汇总负责人，这次调用会直接写成该阶段的汇总记录，因此必须带 body（不再要求你先向自己请求）。不能代替用户验收。", "inputSchema": schema(PROJECT | {"issue_id": STR, "body": STR}, ["project_id"])},
+    {"name": "relay_stage_summary", "description": "汇总负责人提交某个阶段范围的汇总。可用 stage_id（relay_request_summary 返回），也可直接传 issue_id 当场为该议题建立并提交阶段记录——兼任汇总负责人时就该用这种方式，无需先请求。同一议题已有汇总时拒绝，返修后由监督发起新的修订。", "inputSchema": schema(PROJECT | {"stage_id": STR, "issue_id": STR, "body": STR}, ["project_id", "body"])},
+    {"name": "relay_stages", "description": "读取项目的阶段汇总记录：全部历史、每条的正文、修订号、状态、对应议题与板块，以及尚未汇总的已解决议题。用于在阶段完成后核对持久记录，而不必读整个项目。", "inputSchema": schema(PROJECT | {"stage_id": STR}, ["project_id"])},
 ]
-READ_ONLY = {"relay_inbox", "relay_rules", "relay_project", "relay_task", "relay_issue", "relay_message", "relay_event", "relay_list"}
+READ_ONLY = {"relay_inbox", "relay_rules", "relay_project", "relay_task", "relay_issue", "relay_message", "relay_event", "relay_list", "relay_stages"}
 for tool in TOOLS:
     tool['annotations']={'readOnlyHint':tool['name'] in READ_ONLY,'destructiveHint':False,'openWorldHint':False}
 ACTIONS = {"relay_report": "report", "relay_raise_issue": "issue_create", "relay_send_message": "message", "relay_project_message": "project_message", "relay_review": "review", "relay_submit_summary": "summary_submit", "relay_request_summary": "summary_request", "relay_stage_summary": "summary_submit"}
@@ -49,6 +50,7 @@ ACTIONS = {"relay_report": "report", "relay_raise_issue": "issue_create", "relay
 # except recording the member's last-seen timestamp, as relay_inbox already did.
 READS = {"relay_rules": "rules", "relay_project": "read_project", "relay_task": "read_task",
          "relay_issue": "read_issue", "relay_message": "read_message", "relay_event": "read_event",
+         "relay_stages": "read_stages",
          "relay_list": "read_list"}
 
 

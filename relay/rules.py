@@ -35,7 +35,8 @@ FULL = """你正在通过 Stage Relay 参与用户授权的项目。以下是固
 - 群聊回复 relay_send_message（议题）或 relay_project_message（项目级）。
 - 执行成果用 relay_report 提交 review，必须附真实文件改动与命令输出。
 - 遇到阻碍或分歧用 relay_raise_issue 发起议题。
-- 监督者用 relay_review 独立核验；汇总负责人用 relay_submit_summary。
+- 监督者用 relay_review 独立核验；阶段完成时用 relay_request_summary 请汇总负责人做该阶段汇总，
+  汇总负责人用 relay_stage_summary 提交（兼任汇总负责人时直接带 issue_id 与 body 提交）。
 - 不要重复处理同一事件，不要把同一消息重复回复。
 
 四、用户决定权

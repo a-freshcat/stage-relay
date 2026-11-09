@@ -58,7 +58,7 @@ const FileReader = class { readAsDataURL() { this.onerror?.(new Error('unused'))
 `;
 
 const epilogue = `
-globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, resolveMentions};
+globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, resolveMentions, decisions, openStage, openStages, render};
 export {};
 `;
 
@@ -246,6 +246,56 @@ check('@ 解析为真实成员 id', JSON.stringify(probe.resolveMentions('@codex
 check('@ 多个成员取并集', JSON.stringify(probe.resolveMentions('@codex @deepseek 一起看')) === '["codex","deepseek"]');
 check('没有 @ 时不发送 mentions', probe.resolveMentions('大家都看一下').length === 0);
 check('@ 无关名字不产生 mentions', probe.resolveMentions('@nobody 这是谁').length === 0);
+
+// Stage summaries are deliverables: the rail may list only recent titles, but the
+// text and the whole history must open from the panel, and a resolved issue with
+// no stage must be named rather than silently absent.
+const stageProject = JSON.parse(JSON.stringify(open));
+// A copy that keeps the same id would be shadowed by the original in current().
+stageProject.id = 'project_stage_ui';
+stageProject.title = '阶段界面任务';
+stageProject.stages = [
+  {id:'stage_old', issue_id:'issue_a', title:'第一阶段', task_ids:['t1'], revision:1,
+   requested_by:'codex', requested:'2026-11-08T09:00:00+00:00', status:'submitted',
+   body:'第一阶段正文：工具目录已更新。', submitted:'2026-11-08T09:05:00+00:00', actor:'codex', self_submitted:true},
+  {id:'stage_mid', issue_id:'issue_b', title:'第二阶段', task_ids:[], revision:1,
+   requested_by:'codex', requested:'2026-11-08T10:00:00+00:00', status:'requested',
+   body:'', submitted:null, actor:null},
+  {id:'stage_new', issue_id:'issue_c', title:'第三阶段', task_ids:['t2'], revision:2,
+   requested_by:'codex', requested:'2026-11-08T11:00:00+00:00', status:'submitted',
+   body:'第三阶段正文：面板可查看全部历史。', submitted:'2026-11-08T11:05:00+00:00', actor:'codex'},
+  {id:'stage_four', issue_id:'issue_d', title:'第四阶段', task_ids:[], revision:1,
+   requested_by:'codex', requested:'2026-11-08T12:00:00+00:00', status:'submitted',
+   body:'第四阶段正文。', submitted:'2026-11-08T12:05:00+00:00', actor:'codex'},
+  {id:'stage_five', issue_id:'issue_e', title:'第五阶段', task_ids:[], revision:1,
+   requested_by:'codex', requested:'2026-11-08T13:00:00+00:00', status:'submitted',
+   body:'第五阶段正文，应出现在全部历史里。', submitted:'2026-11-08T13:05:00+00:00', actor:'codex'},
+];
+stageProject.issues = (stageProject.issues || []).concat([
+  {id:'issue_gap', title:'尚未汇总的议题', status:'resolved', members:['codex','deepseek'], task_ids:[], created:'2026-11-08T08:00:00+00:00', options:[], messages:[]},
+]);
+probe.state().projects.push(stageProject);
+probe.ui.project = stageProject.id;
+const stageRail = probe.decisions(stageProject);
+check('侧栏阶段汇总提供正文入口', stageRail.includes('data-action="stage-view"'), stageRail.length);
+check('侧栏阶段汇总提供全部历史入口', stageRail.includes('data-action="stage-list"') && stageRail.includes('全部阶段记录 · 5'));
+probe.openStage('stage_new');
+const one = probe.node('#modal').innerHTML;
+check('阶段正文可查看', one.includes('第三阶段正文：面板可查看全部历史。'), one.slice(0, 200));
+check('阶段正文标注修订与板块数', one.includes('第 2 版') && one.includes('涉及 1 个板块'));
+check('阶段正文标注提交人', /Codex|codex/.test(one), one.slice(0,200));
+probe.openStage('stage_old');
+const selfMade = probe.node('#modal').innerHTML;
+check('自行提交的阶段如实标注', selfMade.includes('监督自行提交'), selfMade.slice(0,200));
+probe.openStages();
+const all = probe.node('#modal').innerHTML;
+check('全部阶段记录列出全部历史', ['第一阶段','第二阶段','第三阶段','第四阶段','第五阶段'].every(t => all.includes(t)), all.length);
+check('全部阶段记录显示各自正文', all.includes('第一阶段正文：工具目录已更新。') && all.includes('第五阶段正文，应出现在全部历史里。'));
+check('全部阶段记录标出等待汇总的阶段', all.includes('等待汇总'));
+check('全部阶段记录指出缺少汇总的已解决议题', all.includes('尚未汇总的议题'), all.slice(0, 300));
+check('全部阶段记录无缺字段', !all.includes('undefined') && !all.includes('NaN'), all.slice(0, 300));
+probe.openStage('does-not-exist');
+check('未知阶段给出可读提示而不是空弹窗', probe.node('#modal').innerHTML.includes('阶段汇总') === true);
 
 console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL UI CHECKS PASSED');
 process.exit(failures.length ? 1 : 0);
