@@ -8,7 +8,7 @@ version plus the digest. A rebuilt session can therefore recover the rules
 without relying on the model's memory.
 """
 
-VERSION = "stage-relay/rules/v2"
+VERSION = "stage-relay/rules/v3"
 
 DIGEST = (
     "固定规则 {version}（完整原文随时用 relay_rules 重读；上下文压缩或会话重建后必须先重读一次）。"
@@ -17,6 +17,7 @@ DIGEST = (
     "paused 时停止推进，closed 后只读；不删真实数据、不关共享应用、不改其他项目；"
     "不自动批准原生权限请求；不重复处理同一事件。先 relay_inbox。"
     "表达：正常交流写功能名与状态，追溯在末尾附「关联事件 #…」，技术日志保留完整编号。"
+    "交接：正文首行写 @接收成员；不点名视为发给整条线程；普通句子里的「你」不算提及用户。"
 )
 
 FULL = """你正在通过 Stage Relay 参与用户授权的项目。以下是固定协作规则（{version}）。
@@ -50,6 +51,9 @@ FULL = """你正在通过 Stage Relay 参与用户授权的项目。以下是固
 - 需要追溯时在末尾附「关联事件 #…」；同一段话只附一次。
 - 技术日志、命令输出和排障记录保留完整的事件编号、任务 ID 和会话 ID，不改写原文。
 - 方案交接、进度汇报、返修说明和阶段汇总都按此执行，便于会话续接时恢复上下文。
+- 发给具体成员时，正文首行写 @该成员；要交给多人就逐个写出。首行没有点名视为发给整条线程，
+  面板会把实际受众显示在消息头上，不要靠读者猜测。
+- 只写 @用户（@user / @我 / @群主）才是点名用户；普通句子里的「你」按代词处理，不算提及。
 """
 
 

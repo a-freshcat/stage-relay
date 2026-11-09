@@ -663,9 +663,14 @@ class Store:
             if wants_user:
                 message["mentions_user"] = True
                 self._note_user_mention(project=p, message=message, issue_id=issue["id"])
+            audience = (addressed if addressed is not None
+                        else [m for m in issue["members"] if m != actor])
+            # Persist who this was really sent to, computed here rather than
+            # guessed later from the current member list: the panel shows it on the
+            # message, and history must not be reinterpreted as roles change.
+            message["audience"] = self._audience(audience, wants_user)
             detail.update(text=body[:300], issue_id=issue["id"], message_id=message["id"],
-                          recipients=addressed if addressed is not None
-                          else [m for m in issue["members"] if m != actor])
+                          audience=message["audience"], recipients=audience)
             if addressed is not None:
                 detail["mentions"] = addressed
             if wants_user:
@@ -697,9 +702,11 @@ class Store:
             if wants_user:
                 message["mentions_user"] = True
                 self._note_user_mention(project=p, message=message)
+            audience = (addressed if addressed is not None
+                        else [m for m in sorted(members) if m != actor])
+            message["audience"] = self._audience(audience, wants_user)
             detail.update(text=body[:300], message_id=message["id"], thread="project",
-                          recipients=addressed if addressed is not None
-                          else [m for m in sorted(members) if m != actor])
+                          audience=message["audience"], recipients=audience)
             if addressed is not None:
                 detail["mentions"] = addressed
             if wants_user:
@@ -930,6 +937,25 @@ class Store:
             self._event(db, p["id"], action, actor, detail)
         return result
 
+    @staticmethod
+    def _audience(recipients, to_user):
+        """What the server actually targeted, in a form the panel can display.
+
+        Three shapes only: one member, the user, or the whole thread. The panel
+        says which, so a message that reached everyone never looks like a private
+        note just because its text happens to name somebody.
+        """
+        people = [r for r in (recipients or []) if r]
+        if not people:
+            return {"kind": "user" if to_user else "none", "ids": []}
+        if len(people) == 1 and not to_user:
+            return {"kind": "member", "ids": people}
+        if to_user and not people:
+            return {"kind": "user", "ids": []}
+        if to_user:
+            return {"kind": "user_and_member", "ids": people}
+        return {"kind": "group", "ids": people}
+
     def _addresses_user(self, state, body, explicit):
         """Whether this message is addressed to the user specifically.
 
@@ -951,7 +977,16 @@ class Store:
         scannable = re.sub(r"```.*?```", " ", body or "", flags=re.S)
         scannable = re.sub(r"`[^`]*`", " ", scannable)
         member_labels = {agent["name"] for agent in state["agents"] if agent.get("name")}
-        return any(token in labels for token in self._scan_tokens(scannable, labels | member_labels))
+        tokens = self._scan_tokens(scannable, labels | member_labels)
+        # "你" is ordinary prose far more often than it is an address — "codex 你检查
+        # 一下" names codex, not the user. It only counts when the message is
+        # explicitly written to the user and nobody else is named in it.
+        explicit_user = {"user", "用户", "群主", "我"} & set(tokens)
+        if "你" in tokens and not explicit_user:
+            tokens = [t for t in tokens if t != "你"]
+            if any(t for t in tokens if t not in labels):
+                return False
+        return any(token in labels for token in tokens)
 
     @staticmethod
     def _note_user_mention(project, message, issue_id=None):

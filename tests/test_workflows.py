@@ -380,6 +380,56 @@ class Workflows(unittest.TestCase):
         with self.assertRaises(Invalid):
             self.act("report_request", actor="user", request_id="req-5")
 
+    def test_every_message_records_who_it_was_sent_to(self):
+        """Five routing shapes, all recorded on the message itself.
+
+        The panel shows this, so a message that reached everyone must not look
+        private just because its text names somebody.
+        """
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()  # members: codex, deepseek
+
+        def sent(body, actor="user", mentions=None):
+            args = {"issue_id": i["id"], "body": body}
+            if mentions is not None:
+                args["mentions"] = mentions
+            self.act("message", actor, **args)
+            return self.project()["issues"][0]["messages"][-1]
+
+        broadcast = sent("两边都看一下这个进度")
+        self.assertEqual(broadcast["audience"]["kind"], "group", broadcast)
+        self.assertEqual(sorted(broadcast["audience"]["ids"]), ["codex", "deepseek"])
+
+        one = sent("@codex 请核验")
+        self.assertEqual(one["audience"]["kind"], "member")
+        self.assertEqual(one["audience"]["ids"], ["codex"])
+
+        to_user = sent("@user 请确认")
+        self.assertEqual(to_user["audience"]["kind"], "user")
+        self.assertEqual(to_user["audience"]["ids"], [])
+
+        both = sent("@user 与 @codex 一起看")
+        self.assertEqual(both["audience"]["kind"], "user_and_member", both)
+        self.assertIn("codex", both["audience"]["ids"])
+
+        # Structured routing with no mention in the text: the audience is the
+        # structured target, not "everyone".
+        structured = sent("进度已更新", actor="codex", mentions=["deepseek"])
+        self.assertEqual(structured["audience"]["kind"], "member", structured)
+        self.assertEqual(structured["audience"]["ids"], ["deepseek"])
+
+    def test_a_pronoun_does_not_mark_the_user_as_addressed(self):
+        """"codex 你检查一下" addresses codex, not the user."""
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()
+        self.act("message", "user", issue_id=i["id"],
+                 body="不过deepseek说这话的时候怎么没@你，codex你检查一下功能是否有漏洞@Codex")
+        message = self.project()["issues"][0]["messages"][-1]
+        self.assertFalse(message.get("mentions_user"), message)
+        self.assertEqual(self.project()["mention_total"], 0)
+
     def test_prose_about_a_symbol_is_not_an_unknown_addressee(self):
         """Explaining the badge must not be refused as a mistyped name.
 

@@ -55,6 +55,19 @@ const date = value => {const parsed = toDate(value);return parsed ? new Intl.Dat
 const bytes = n => n >= 1073741824 ? `${(n/1073741824).toFixed(1)} GB` : n >= 1048576 ? `${(n/1048576).toFixed(1)} MB` : n >= 1024 ? `${(n/1024).toFixed(1)} KB` : `${n} B`;
 const datetime = value => {const parsed = toDate(value);return parsed ? new Intl.DateTimeFormat('zh-CN', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}).format(parsed) : '时间未知';};
 const appIcon = (id, small = false) => id === 'user' ? '<span class="avatar-user">我</span>' : `<span class="app-icon${small ? ' small' : ''}"><img src="${apps[member(id)?.app]?.icon || apps.codex.icon}" alt="${esc(apps[member(id)?.app]?.name || '')} 图标"></span>`;
+// Who the server actually sent this to. Messages recorded before audiences were
+// stored say so instead of being reinterpreted with today's member list.
+const audienceTag = m => {
+  const a = m.audience;
+  if (!a || !a.kind) return '<span class="audience">目标：未记录</span>';
+  const who = (a.ids || []).map(id => name(id)).join('、');
+  const label = a.kind === 'member' ? `发给 ${who}`
+    : a.kind === 'user' ? '发给用户'
+    : a.kind === 'user_and_member' ? `发给用户与 ${who}`
+    : a.kind === 'group' ? '全组'
+    : '无收件人';
+  return `<span class="audience ${a.kind}" title="服务端实际派发受众">${esc(label)}</span>`;
+};
 const btn = (action, label, ico = '', css = '', attrs = '') => `<button type="button" class="btn ${css}" data-action="${action}" ${attrs}>${ico ? icon(ico) : ''}${label}</button>`;
 const badge = (label, tone = '', ico = '') => `<span class="badge ${tone}">${ico ? icon(ico) : ''}${esc(label)}</span>`;
 const chip = id => `<span class="member-chip">${appIcon(id, true)}${id === 'user' ? '' : esc(name(id))}</span>`;
@@ -397,7 +410,7 @@ function chatLog(t) {
   const live = t.messages.filter(m => !m.archived);
   const gone = t.messages.filter(m => m.archived);
   if (!t.messages.length) return `<div class="empty">${icon('chat')}${t.mode === 'project' ? '项目群聊还没有消息。<br>可以直接说明进度、提问或交接，不必先发起议题。' : '还没有消息，先说明背景。'}</div>`;
-  const body = m => `<article class="message ${m.actor === 'user' ? 'user' : ''} ${m.decision ? 'decision' : ''} ${m.archived ? 'recycled' : ''} ${m.mentions_user ? 'mentions-user' : ''}" id="msg-${m.id}" data-message="${m.id}"${m.mentions_user ? ' data-mentions-user="1"' : ''}>${appIcon(m.actor)}<div class="message-body"><div class="message-meta"><strong>${esc(name(m.actor))}</strong>${m.mentions_user ? '<span class="mention-tag" title="这条消息明确提到你">提到你</span>' : ''}<time datetime="${esc(m.created)}">${esc(date(m.created))}</time>${m.archived ? badge('已回收') : btn('record-archive','回收','','ghost',`data-kind="${t.mode === 'issue' ? 'issue_message' : 'project_message'}" data-item="${m.id}" data-issue="${t.mode === 'issue' ? t.issue.id : ''}" title="移入回收区，可恢复"`)}</div><div class="message-text">${esc(m.body)}${(m.attachments || []).map(f => `<a class="attachment" href="/files/${f.id}" download>${icon('file')}${esc(f.name)} ${icon('arrow')}</a>`).join('')}</div>${m.archived ? `<div class="small muted">${btn('record-restore','恢复','arrow','ghost',`data-kind="${t.mode === 'issue' ? 'issue_message' : 'project_message'}" data-item="${m.id}" data-issue="${t.mode === 'issue' ? t.issue.id : ''}"`)}</div>` : ''}</div></article>`;
+  const body = m => `<article class="message ${m.actor === 'user' ? 'user' : ''} ${m.decision ? 'decision' : ''} ${m.archived ? 'recycled' : ''} ${m.mentions_user ? 'mentions-user' : ''}" id="msg-${m.id}" data-message="${m.id}"${m.mentions_user ? ' data-mentions-user="1"' : ''}>${appIcon(m.actor)}<div class="message-body"><div class="message-meta"><strong>${esc(name(m.actor))}</strong>${m.mentions_user ? '<span class="mention-tag" title="这条消息明确提到你">提到你</span>' : ''}${audienceTag(m)}<time datetime="${esc(m.created)}">${esc(date(m.created))}</time>${m.archived ? badge('已回收') : btn('record-archive','回收','','ghost',`data-kind="${t.mode === 'issue' ? 'issue_message' : 'project_message'}" data-item="${m.id}" data-issue="${t.mode === 'issue' ? t.issue.id : ''}" title="移入回收区，可恢复"`)}</div><div class="message-text">${esc(m.body)}${(m.attachments || []).map(f => `<a class="attachment" href="/files/${f.id}" download>${icon('file')}${esc(f.name)} ${icon('arrow')}</a>`).join('')}</div>${m.archived ? `<div class="small muted">${btn('record-restore','恢复','arrow','ghost',`data-kind="${t.mode === 'issue' ? 'issue_message' : 'project_message'}" data-item="${m.id}" data-issue="${t.mode === 'issue' ? t.issue.id : ''}"`)}</div>` : ''}</div></article>`;
   return (live.map(body).join('') || `<div class="empty">${icon('chat')}这个会话的消息都已回收，可在下方恢复。</div>`)
     + (gone.length ? `<details class="recycled-group"><summary>已回收消息 ${gone.length}</summary>${gone.map(body).join('')}</details>` : '');
 }

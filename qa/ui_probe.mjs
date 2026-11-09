@@ -59,7 +59,7 @@ const FileReader = class { readAsDataURL() { this.onerror?.(new Error('unused'))
 `;
 
 const epilogue = `
-globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, decisions, openStage, openStages, render, renderKey, actions, comparableState, issueCard, issuesPage, mentionCount, settleMentions, openMention, reportCard, openReports, cards};
+globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, decisions, openStage, openStages, render, renderKey, actions, comparableState, issueCard, issuesPage, mentionCount, settleMentions, openMention, reportCard, openReports, cards, audienceTag};
 export {};
 `;
 
@@ -484,6 +484,15 @@ await (async () => {
   const all = probe.cards(proj);
   check('提醒块只出现在成果汇总卡', (all.match(/report-entry/g) || []).length === 1);
 
+})();
+
+// The message header states who the server actually sent it to.
+await (async () => {
+  check('定向成员显示发给谁', /发给 Codex/.test(probe.audienceTag({audience:{kind:'member',ids:['codex']}})));
+  check('发给用户单独标注', /发给用户/.test(probe.audienceTag({audience:{kind:'user',ids:[]}})));
+  check('全组明确写全组', /全组/.test(probe.audienceTag({audience:{kind:'group',ids:['codex','deepseek']}})));
+  check('用户与成员同时标注', /发给用户与/.test(probe.audienceTag({audience:{kind:'user_and_member',ids:['codex']}})));
+  check('旧消息标为未记录', /未记录/.test(probe.audienceTag({})));
 })();
 
 console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL UI CHECKS PASSED');

@@ -29,6 +29,11 @@ dialog{border:1px solid #d9dfd8;background:#fcfcfa;border-radius:14px;padding:0;
 .storage-row{display:flex;gap:8px;align-items:center;border:1px solid #e6e8e7;border-radius:8px;padding:8px 10px;background:#fff}
 .storage-size{font-variant-numeric:tabular-nums;font-size:11px;color:#46524e}
 /* Follow-up report block on the reporter's card, and its history modal. */
+/* Who a message was actually sent to, beside the author. */
+.audience{display:inline-flex;align-items:center;font-size:11px;line-height:1;padding:2px 6px;border-radius:999px;border:1px solid var(--line,#e6e6e6);color:var(--muted,#6b6b6b);margin-left:6px}
+.audience.member{border-color:#c7dcff;color:#2a5db0}
+.audience.group{border-color:#f3d6a7;color:#8a5a12}
+.audience.user{border-color:#cfe9cf;color:#2f6b32}
 .report-entry{border-top:1px solid var(--line,#e6e6e6);margin-top:10px;padding-top:10px}
 .report-head{display:flex;gap:6px;align-items:center;margin-bottom:6px}
 .report-note{font-size:12px;line-height:1.6;color:var(--muted,#6b6b6b);margin-bottom:8px;word-break:break-word}
