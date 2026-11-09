@@ -232,18 +232,43 @@ class CodexHost:
             return
         if session not in self.sessions:raise NativeError('Bound Codex native thread unavailable')
         if job['kind']=='model-catalog':
-            result=self.rpc.request('model/list',{'limit':100})
-            models=[{'provider':self.sessions[session]['provider'],'model':m['model'],'label':m.get('displayName') or m['model']} for m in result.get('data',[])]
+            result=self.rpc.request('model/list',{'limit':100,'includeHidden':False})
+            # `supportedReasoningEfforts` is what this model advertises, and
+            # `turn/start.effort` must be one of those values. A model without the
+            # list gets no depth selector instead of a value the server refuses.
+            models=[]
+            for m in result.get('data',[]):
+                entry={'provider':self.sessions[session]['provider'],'model':m['model'],
+                       'label':m.get('displayName') or m['model']}
+                efforts=[e.get('reasoningEffort') for e in (m.get('supportedReasoningEfforts') or [])
+                         if isinstance(e,dict) and e.get('reasoningEffort')]
+                if efforts:
+                    entry['efforts']=efforts
+                    if m.get('defaultReasoningEffort'):
+                        entry['effortDefault']=m['defaultReasoningEffort']
+                models.append(entry)
             self.server.runtime.receipt(self.agent,{'id':job['id'],'status':'delivered','result':{'models':models}})
         elif job['kind']=='model-select':
             selected=job['selection']
             if selected['provider']!=self.sessions[session]['provider']:raise NativeError('Changing the native model provider requires reconnecting the original harness configuration')
-            available=self.rpc.request('model/list',{'limit':100})
-            if selected['model'] not in {m['model'] for m in available.get('data',[])}:raise NativeError('Model is not available in the native Codex catalog')
+            available=self.rpc.request('model/list',{'limit':100,'includeHidden':False})
+            offered={m['model']:m for m in available.get('data',[])}
+            if selected['model'] not in offered:raise NativeError('Model is not available in the native Codex catalog')
+            effort=selected.get('reasoningEffort')
+            if effort:
+                # Only an advertised value is accepted; the server types this as a
+                # free string, so the panel is what keeps it honest.
+                allowed={e.get('reasoningEffort') for e in (offered[selected['model']].get('supportedReasoningEfforts') or [])
+                         if isinstance(e,dict)}
+                if effort not in allowed:
+                    raise NativeError('该模型不支持的思考深度：'+str(effort))
             # This thread is already owned by this app-server. Reattaching it
             # just to change a model can contend with its active writer.
             if session in self.active:raise NativeError('请等当前原生执行结束后再切换模型。')
-            with self.lock:self.sessions[session]['nextModel']=selected['model']
+            with self.lock:
+                self.sessions[session]['nextModel']=selected['model']
+                if effort:self.sessions[session]['nextEffort']=effort
+                else:self.sessions[session].pop('nextEffort',None)
             self.server.runtime.receipt(self.agent,{'id':job['id'],'status':'delivered','result':{'selected':selected}})
         else:
             text=[{'type':'text','text':job['prompt'],'text_elements':[]}]
@@ -252,6 +277,9 @@ class CodexHost:
             else:
                 options={'threadId':session,'input':text}
                 if self.sessions[session].get('nextModel'):options['model']=self.sessions[session]['nextModel']
+                # `turn/start.effort` overrides the depth for this turn and the
+                # following ones; omitting it keeps the thread's own setting.
+                if self.sessions[session].get('nextEffort'):options['effort']=self.sessions[session]['nextEffort']
                 result=self.rpc.request('turn/start',options)
                 self.active[session]=result['turn']['id']
                 with self.lock:self.sessions[session]['status']='running'
@@ -412,6 +440,27 @@ class CodexManager:
                 self.connection_states.pop(agent,None)
             if host:host.close()
             with self.server.store.connect() as db:db.execute('DELETE FROM codex_enabled WHERE agent=?',(agent,))
+
+    def release(self,agent):
+        """Drop only this panel's app-server, keeping the app authorization.
+
+        The thread keeps whatever writer it had; what this frees is the panel's
+        own subscription so a thread the desktop app is using stops being
+        contested by us. Nothing is deleted, no lock file is touched, and no
+        shared application is stopped — `host.close()` interrupts our turns and
+        unsubscribes only the threads we actually attached.
+        """
+        with self.lock:gate=self.connect_locks.setdefault(agent,threading.Lock())
+        with gate:
+            with self.lock:
+                host=self.hosts.pop(agent,None)
+                self.connection_states.pop(agent,None)
+            released=bool(host)
+            if host:host.close()
+            with self.server.store.connect() as db:
+                db.execute('DELETE FROM codex_enabled WHERE agent=?',(agent,))
+        return {'released':released,'agent':agent,
+                'notice':'已断开本面板的 Codex 后台连接；接入配置、会话记录与桌面应用都保留，可随时重连。'}
 
     def respond(self,agent,key,answer):
         with self.lock:host=self.hosts.get(agent)

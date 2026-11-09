@@ -379,6 +379,13 @@ class Handler(BaseHTTPRequestHandler):
                 if result['configured'] and body.get('project_id') and member['app'] in {'codex','dsh'}:
                     result['native_session']=self.server.runtime.create_session(body['project_id'],member['id'],wait_for_connection=True)
                 self.json(result)
+            elif path == '/api/native/codex/release':
+                # Free the panel's own app-server without touching the app
+                # authorization, the thread or any shared process.
+                member=next((a for a in self.server.store.snapshot()['agents'] if a['id']==body.get('agent_id')),None)
+                if not member or member['app']!='codex':
+                    raise Invalid('请选择 Codex 成员。')
+                self.json(self.server.codex.release(member['id']))
             elif path == "/api/project/close":
                 # Closing is two ordered stages: the durable record stops work,
                 # then only registered resources are retired or unbound.

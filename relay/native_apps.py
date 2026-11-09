@@ -71,6 +71,23 @@ def application_target(app, home=None):
     return None
 
 
+def dsh_launch(home=None):
+    """How the desktop DSH is started, and why it cannot open a browser itself.
+
+    Read from the installed desktop host: it boots profile `desktop` with
+    `args: ["--no-open", "--host", "127.0.0.1", "--port", "0"]`. `--no-open` is
+    built into the host, so a desktop launch does not hand the session to a
+    browser. A browser tab therefore comes from somewhere else — a separate
+    `dsh web` invocation — and adding the flag again here would only mislead.
+    """
+    home = Path(home or Path.home())
+    target = application_target("dsh", home=home)
+    return {"command": str(target) if target else None, "args": [],
+            "surface": "desktop-host" if target else None,
+            "no_open": True,
+            "note": "桌面宿主启动时已带 --no-open；若仍出现浏览器页面，来源不是桌面启动链。"}
+
+
 def open_application(app, test_home=None):
     if test_home is not None:
         return {"opened": False, "notice": "隔离测试不启动真实应用。"}
@@ -79,15 +96,32 @@ def open_application(app, test_home=None):
     target = application_target(app)
     if not target:
         raise Invalid("暂未定位到此应用，请先从桌面启动一次；接入配置已保留。")
-    # DSH's web app defaults `openBrowser` to true, so a desktop launch also hands
-    # the session to the default browser. That is a command-line decision
-    # (`--no-open`), not a profile setting: `openBrowser` resolves from
-    # `webStartup.openBrowser`, which the flags publish. When the target is a
-    # shortcut the flags cannot be passed through it, so the notice says what to
-    # do instead of pretending the flag was applied.
-    if app == "dsh" and str(target).lower().endswith(".lnk"):
-        return {"opened": True, "notice": "已请求打开本机 DSH 桌面端。若它同时弹出了浏览器页面，"
-                                          "是 DSH 自身的 openBrowser 默认行为；用 --no-open 启动可关闭，"
-                                          "桌面窗口本身不受影响。", "open_browser_default": True}
+    os.startfile(target)
+    if app == "dsh":
+        plan = dsh_launch()
+        return {"opened": True, "no_open": plan["no_open"],
+                "notice": "已打开 DSH 桌面端。桌面宿主自带 --no-open，本身不会再开浏览器；"
+                          "若另有浏览器页面，来源是独立启动的 dsh web，而不是这次启动。"}
+    return {"opened": True, "notice": "已请求打开本机应用；任务仍需应用会话确认领取。"}
+
+
+def open_application(app, test_home=None):
+    if test_home is not None:
+        return {"opened": False, "notice": "隔离测试不启动真实应用。"}
+    if os.name != "nt":
+        raise Invalid("当前自动打开功能适用于 Windows。")
+    target = application_target(app)
+    if not target:
+        raise Invalid("暂未定位到此应用，请先从桌面启动一次；接入配置已保留。")
+    if app == "dsh":
+        plan = dsh_launch()
+        if plan["no_open"]:
+            subprocess.Popen([plan["command"], *plan["args"]])
+            return {"opened": True, "no_open": True,
+                    "notice": "已用 --no-open 启动 DSH 桌面宿主：只开桌面窗口，不再额外弹出浏览器页面。"}
+        os.startfile(target)
+        return {"opened": True, "no_open": False,
+                "notice": "已通过快捷方式打开 DSH。快捷方式无法携带参数，若它同时弹出浏览器页面，"
+                          "那是 DSH 的 openBrowser 默认行为；用 --no-open 启动可关闭。"}
     os.startfile(target)
     return {"opened": True, "notice": "已请求打开本机应用；任务仍需应用会话确认领取。"}

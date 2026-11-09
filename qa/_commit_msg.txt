@@ -1,0 +1,37 @@
+0.1.4: Codex reasoning depth, a real release path for a held thread, DSH launch facts
+
+Three gaps from review 184, plus one correction of my own earlier claim.
+
+Codex depth (was missing entirely):
+- model/list already advertises supportedReasoningEfforts and
+  defaultReasoningEffort; the catalog now carries both, so a model without them
+  offers no selector.
+- model-select validates the effort against the values that model advertised and
+  stores it; turn/start sends it as effort, which the protocol documents as an
+  override for this and following turns.
+- That validation is load-bearing: a real app-server accepted an arbitrary
+  effort string and started a turn. The panel is the thing keeping the value
+  honest, so an unadvertised depth is refused here.
+
+Held thread (the user's "cannot release the occupancy"):
+- Reproduced against two real app-servers: the second thread/resume on a live
+  thread returns "thread ... already has an active writer". The holder identity
+  is not in the protocol, so the panel states it as unknown instead of inferring.
+- The error now names the exact thread, says the contention is between this panel
+  and that thread existing writer, and offers a release action: a new
+  /api/native/codex/release that closes only our app-server. The app
+  authorization, the thread, the desktop app and every lock file are untouched,
+  and reconnecting needs no re-setup.
+
+DSH browser claim (correcting myself):
+- The installed desktop host already boots with
+  args ["--no-open", "--host", "127.0.0.1", "--port", "0"], so a desktop launch
+  cannot hand the session to a browser. Adding --no-open again would have been
+  cargo cult, and routing through cli.js web would have started a web surface,
+  the opposite of the request. dsh_launch() now reports that fact instead of
+  claiming a fix, and the notice says a browser tab comes from a separate
+  dsh web invocation, not from this launch.
+
+Verified: 152 tests (1 skipped), node --check, qa/ui_probe.mjs with writer and
+depth assertions, packaged 0.1.4 end to end. Read-only diagnostics recorded real
+desktop data: 8 Codex models with per-model depths, and gpt-6-luna lacks ultra.

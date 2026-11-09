@@ -1,4 +1,4 @@
-"""Packaged 0.1.3 check: reference recheck, one-shot claim, per-item restore.
+"""Packaged 0.1.4 check: reference recheck, one-shot claim, per-item restore.
 
 Runs the real exe on isolated data inside qa/ and reproduces the reviewer's
 scenario: an attachment previewed as a candidate, then referenced by a message
@@ -14,13 +14,13 @@ import http.client
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
-exe = root / "release/StageRelay-0.1.3/Stage Relay/Stage Relay.exe"
-data = root / "qa/release-013-data"
+exe = root / "release/StageRelay-0.1.4-20261109-173206/Stage Relay/Stage Relay.exe"
+data = root / "qa/release-014-data"
 data.mkdir(exist_ok=True)
 workspace = data / "workspace"
 workspace.mkdir(exist_ok=True)
 port = 4355
-title = f"0.1.3打包检查-{int(time.time())}"
+title = f"0.1.4打包检查-{int(time.time())}"
 
 startup = subprocess.STARTUPINFO()
 startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -53,7 +53,7 @@ try:
             if time.monotonic() > until:
                 raise
             time.sleep(0.25)
-    assert health["version"] == "0.1.3", health
+    assert health["version"] == "0.1.4", health
 
     _, _, headers = request("GET", "/")
     cookie = headers["Set-Cookie"].split(";")[0]

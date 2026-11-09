@@ -49,6 +49,37 @@ class ReviewerHandoff(unittest.TestCase):
         with self.assertRaises(Invalid):self.review('codex')
         self.review('codex',2)
 
+    def test_release_frees_only_this_panels_connection(self):
+        """Releasing must not delete the authorization, thread or shared app."""
+        from relay.runtime import Runtime
+        Runtime(self.store)
+        self.store.apply('setup_record',{'agent_id':'codex','configured':True,'path':'fixture'})
+        entry={'command':'fixture'}
+        server=SimpleNamespace(store=self.store,connections=SimpleNamespace(owned={'codex':{'entry':entry}},entry=lambda _:entry))
+        manager=CodexManager(server)
+        closed=[]
+        class Host:
+            def __init__(self,*args):pass
+            def snapshot(self):return {'agent':'codex','connected':True,'approvals':[]}
+            def retry_sessions(self):pass
+            def close(self):closed.append(1)
+        with patch('relay.codex.CodexHost',Host):
+            manager.request_connect('codex')
+            for _ in range(100):
+                if manager.snapshot() and manager.snapshot()[0].get('connectionStatus')=='connected':
+                    break
+                time.sleep(.01)
+            result=manager.release('codex')
+            self.assertTrue(result['released'])
+            self.assertEqual(closed,[1])
+            self.assertEqual(manager.snapshot(),[])
+        # The app authorization survives, so reconnecting needs no re-setup.
+        member=next(a for a in self.store.snapshot()['agents'] if a['id']=='codex')
+        self.assertTrue(member['setup']['configured'])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM codex_enabled").fetchone()[0],0)
+            self.assertTrue(db.execute("SELECT COUNT(*) FROM codex_threads").fetchone()[0] >= 0)
+
     def test_background_connect_does_not_block_state_or_duplicate_hosts(self):
         from relay.runtime import Runtime
         Runtime(self.store)
@@ -104,6 +135,59 @@ class ReviewerHandoff(unittest.TestCase):
         host._job({'id':'review','session':'session','kind':'report','prompt':'检查原有成果'})
         self.assertEqual([m for m,_ in calls],['model/list','turn/start'])
         self.assertEqual(calls[-1][1]['model'],'model-b')
+
+    def test_codex_model_catalog_exposes_advertised_efforts(self):
+        efforts=[{'reasoningEffort':'low','description':'fast'},
+                 {'reasoningEffort':'high','description':'deep'}]
+        def request(method,args):
+            if method=='model/list':
+                return {'data':[{'model':'with-effort','displayName':'With Effort',
+                                 'supportedReasoningEfforts':efforts,
+                                 'defaultReasoningEffort':'low'},
+                                {'model':'plain','displayName':'Plain'}]}
+            return {'turn':{'id':'t'}}
+        receipts=[]
+        host=CodexHost.__new__(CodexHost)
+        host.rpc=SimpleNamespace(request=request);host.lock=threading.RLock()
+        host.sessions={'session':{'provider':'provider','model':'model-a'}};host.active={}
+        host.server=SimpleNamespace(runtime=SimpleNamespace(receipt=lambda *a:receipts.append(a)))
+        host.agent='codex'
+        host._job({'id':'cat','session':'session','kind':'model-catalog'})
+        models=receipts[0][1]['result']['models']
+        rich=[m for m in models if m['model']=='with-effort'][0]
+        flat=[m for m in models if m['model']=='plain'][0]
+        # Only an advertising model offers depths; the other offers none.
+        self.assertEqual(rich['efforts'],['low','high'])
+        self.assertEqual(rich['effortDefault'],'low')
+        self.assertNotIn('efforts',flat)
+
+    def test_codex_effort_is_validated_and_sent_on_the_turn(self):
+        def request(method,args):
+            if method=='model/list':
+                return {'data':[{'model':'m','supportedReasoningEfforts':
+                                 [{'reasoningEffort':'low'},{'reasoningEffort':'max'}]}]}
+            return {'turn':{'id':'turn-next'}}
+        receipts=[]
+        host=CodexHost.__new__(CodexHost)
+        host.rpc=SimpleNamespace(request=request);host.lock=threading.RLock()
+        host.sessions={'session':{'provider':'provider','model':'m'}};host.active={}
+        host.server=SimpleNamespace(runtime=SimpleNamespace(receipt=lambda *a:receipts.append(a)))
+        host.agent='codex'
+        host._job({'id':'sel','session':'session','kind':'model-select',
+                   'selection':{'provider':'provider','model':'m','reasoningEffort':'max'}})
+        self.assertEqual(receipts[-1][1]['status'],'delivered')
+        seen={}
+        host.rpc=SimpleNamespace(request=lambda m,a: (seen.update(a),{'turn':{'id':'t'}})[1])
+        host._job({'id':'run','session':'session','kind':'report','prompt':'go'})
+        self.assertEqual(seen['effort'],'max')
+        # An effort the model never advertised is refused, because the server
+        # accepts arbitrary strings and would not catch it for us. The loop turns
+        # this NativeError into a failed receipt, so it must raise here.
+        host.rpc=SimpleNamespace(request=request)
+        with self.assertRaises(NativeError) as raised:
+            host._job({'id':'bad','session':'session','kind':'model-select',
+                       'selection':{'provider':'provider','model':'m','reasoningEffort':'ultra'}})
+        self.assertIn('思考深度',str(raised.exception))
 
     def test_old_reviewer_queued_work_is_cancelled_without_touching_result(self):
         runtime=Runtime(self.store)

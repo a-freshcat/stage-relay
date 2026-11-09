@@ -126,7 +126,7 @@ probe.state().runtime={hosts:[],bindings:[]};
 probe.state().codexNative=[{agent:'codex',connected:false,connectionStatus:'failed',connectionError:'thread example already has an active writer',approvals:[]}];
 check('审核断线显示等待且保留任务',probe.roleStatus(reviewerProject,'planner').includes('审核等待连接'));
 const info=probe.nativeInfo(reviewerProject,{id:'codex',app:'codex'});
-check('占用错误显示中文解释和重试',info.includes('正在被另一个连接使用') && info.includes('连接 / 重试 Codex'));
+check('占用错误显示中文解释和重试',info.includes('已被另一个写入者持有') && info.includes('连接 / 重试 Codex'));
 check('原始占用信息放入技术详情',info.includes('<details>') && info.includes('技术详情'));
 
 probe.state().runtime={hosts:[{agent:'codex',online:true,sessions:[]}],bindings:[]};
@@ -222,6 +222,23 @@ check('思考深度选择器按路由渲染', effortHtml.includes('思考深度'
 check('思考深度默认选中路由默认值', /<option value="medium" selected>/.test(effortHtml));
 check('思考深度列出全部受支持值', ['low','medium','high'].every(e => effortHtml.includes(`value="${e}"`)));
 check('无推理能力的路由不显示思考深度', probe.effortField(noEfforts, 0) === '');
+
+// The writer holder is not observable from the panel: the app-server protocol
+// carries no holder identity. The UI must say so and offer a release path
+// instead of telling the user to hunt for a lock.
+rtState.runtime.bindings = [{project:closed.id,agent:'codex',session:'01a1bbcb-7ac0-7393-9c67-a42022246540',generation:1}];
+rtState.codexNative = [{agent:'codex', connected:false,
+  connectionError:'thread 01a1bbcb-7ac0-7393-9c67-a42022246540 already has an active writer'}];
+const writerHtml = probe.cards(closedProject);
+check('active writer 报出确切线程', writerHtml.includes('01a1bbcb-7ac0-7393-9c67-a42022246540'));
+check('持有者如实标未知', writerHtml.includes('未知'));
+check('提供断开本面板连接', writerHtml.includes('断开本面板 Codex 连接'));
+// Negative form: the panel must not *instruct* the user to delete a lock or
+// close the shared desktop application. Saying it does neither is fine, so the
+// pattern only matches an imperative aimed at the user.
+check('不要求用户删锁或关共享应用', !/(请|你需要|建议)[^。]{0,12}(删锁|删除锁|关闭桌面端 Codex)/.test(writerHtml));
+rtState.codexNative = [];
+rtState.runtime.bindings = [];
 
 console.log(failures.length ? `\n${failures.length} FAILED` : '\nALL UI CHECKS PASSED');
 process.exit(failures.length ? 1 : 0);
