@@ -15,8 +15,10 @@ import sys
 import urllib.request
 from pathlib import Path
 
+VERSION = sys.argv[3] if len(sys.argv) > 3 else "0.1.9"
+
 ROOT = Path(__file__).resolve().parent.parent
-BRIDGE = ROOT / "release/StageRelay-0.1.8/Stage Relay/StageRelayBridge.exe"
+BRIDGE = ROOT / "release/StageRelay-0.1.9/Stage Relay/StageRelayBridge.exe"
 BASE = sys.argv[1]
 DATA = Path(sys.argv[2])
 PORT = BASE.rsplit(":", 1)[1]
@@ -103,7 +105,7 @@ def catalogue():
 
 panel = Panel(BASE)
 health = json.load(urllib.request.urlopen(BASE + "/api/health"))
-check("panel is 0.1.8", health["version"] == "0.1.8", health)
+check("panel is the built version", health["version"] == VERSION, health)
 
 tools = catalogue()
 check("catalogue advertises relay_stages", "relay_stages" in tools, sorted(tools))

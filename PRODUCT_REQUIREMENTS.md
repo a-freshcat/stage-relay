@@ -64,3 +64,14 @@
 - 会话路由：换绑原生会话会取消旧的排队派发、`native_binding_meta` 记录 `generation` 轮次，执行记录弹窗显示实际绑定的会话 ID 与轮次，明确「可能不是你正在看的窗口」。
 - 自动化检查：`python -m unittest discover -s tests -q`（99 项通过、1 项跳过）、`node --check web/app.js`、`node qa/ui_probe.mjs` 全通过。
 - 仍未实测：真实 DSH 会话的 `archiveSession` 端到端归档（只有同名桩服务的解析与调用路径实验）；DSH 插件不返回会话父子关系。
+
+## 0.3.8 / 0.1.8 状态（阶段汇总闭环 + 工具目录跟随版本）
+
+用户要求的阶段汇总与「@ 只通知被点名成员」已在此前版本落地；本轮补齐 Codex 实测指出的三处缺口，并修掉一个此前双方都没点名的根本原因。
+
+- 工具发现：`connection-ownership.json` 只记录授权契约（成员、端口、数据目录），桥可执行文件跟随当前运行包。此前它固定指回授权当次的包，应用加载旧包桥，`tools/list` 永远只回旧目录——重装、重载都无法让新工具出现。面板启动时自动重指一次并留备份，`/api/health` 的 `bridge_refresh` 给出可核对结果。
+- 阶段汇总角色路径：兼任监督与汇总负责人时，`relay_request_summary` 带 `issue_id` 与 `body` 一次写成阶段记录（`self_submitted`）；`relay_stage_summary` 可只带 `issue_id` 直接建立并提交，不必等一个发给自己的请求。同一议题第二次提交被拒绝，不会悄悄产生第 2 版。
+- 持久与可见：新增只读 `relay_stages`（全部阶段、正文、`pending_stages` 列出已解决但未汇总的议题）；面板侧栏提供「正文」与「全部阶段记录 · N」，弹窗列出全部历史与各自正文。
+- 规则文本：新增「表达方式（用户约定）」一节，版本提升为 `stage-relay/rules/v2`。规则文本改动必须同步提升版本号，`native_rules.rules_version` 会让已确认旧版本的会话重新收到一次全文，否则新增条款只会落在摘要之外。
+- 自动化检查：`python -m pytest tests -q`（169 项通过、1 项跳过）、`node qa/ui_probe.mjs`、`python qa/stage_full_verify.py`（对真实 4318 与打包桥的 20 项端到端检查）。
+- 仍未实测：DSH 按路由的思考深度真实值（会话占用导致 job 停在 queued）；「桌面登录恢复同一 thread」只有两 app-server 层的冲突复现，没有真实登录日志。

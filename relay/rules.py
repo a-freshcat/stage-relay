@@ -8,7 +8,7 @@ version plus the digest. A rebuilt session can therefore recover the rules
 without relying on the model's memory.
 """
 
-VERSION = "stage-relay/rules/v1"
+VERSION = "stage-relay/rules/v2"
 
 DIGEST = (
     "固定规则 {version}（完整原文随时用 relay_rules 重读；上下文压缩或会话重建后必须先重读一次）。"
@@ -16,6 +16,7 @@ DIGEST = (
     "硬约束：只在项目 workspace 内工作；用户拥有最终决定权，不代用户选择或验收，不核验自己；"
     "paused 时停止推进，closed 后只读；不删真实数据、不关共享应用、不改其他项目；"
     "不自动批准原生权限请求；不重复处理同一事件。先 relay_inbox。"
+    "表达：正常交流写功能名与状态，追溯在末尾附「关联事件 #…」，技术日志保留完整编号。"
 )
 
 FULL = """你正在通过 Stage Relay 参与用户授权的项目。以下是固定协作规则（{version}）。
@@ -43,6 +44,12 @@ FULL = """你正在通过 Stage Relay 参与用户授权的项目。以下是固
 - 用户拥有最终决定权：不能代替用户选择、验收或结束项目，不能核验自己执行的板块。
 - 暂停与结束必须生效：paused 时停止推进；closed 后只读，不再派发或唤醒。
 - 不删除真实数据、不关闭共享应用、不修改其他项目；不自动批准原生权限请求。
+
+五、表达方式（用户约定）
+- 正常交流写清功能名称、问题描述和当前状态，不要求读者先记住事件编号。
+- 需要追溯时在末尾附「关联事件 #…」；同一段话只附一次。
+- 技术日志、命令输出和排障记录保留完整的事件编号、任务 ID 和会话 ID，不改写原文。
+- 方案交接、进度汇报、返修说明和阶段汇总都按此执行，便于会话续接时恢复上下文。
 """
 
 

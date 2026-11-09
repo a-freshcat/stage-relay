@@ -1,0 +1,23 @@
+0.1.9: a changed rules text actually reaches a session that already confirmed one
+
+Codex asked for the user's expression rule to live in the collaboration rules and
+in the handoff, so a rebuilt session recovers it. Writing the section exposed a
+real defect behind the "once per binding, then only a digest" optimisation: a
+session that had confirmed any version never received a new full text again, so a
+new clause would only ever exist outside the digest.
+
+- rules: section 五 表达方式 carries the user's convention (feature names and
+  state in normal writing, 关联事件 #… appended once for traceability, technical
+  logs keep full event/task/session ids). VERSION moves to stage-relay/rules/v2.
+- runtime: native_rules gains rules_version. An ordinary wake still sends only the
+  digest, but a session holding an older version gets the full text exactly once.
+  The column is added with a tolerated ALTER on existing databases.
+- tests: a version change is resent in full while a same-version wake is not.
+- handoff/PRODUCT_REQUIREMENTS: the convention, the stage-summary paths, and the
+  bridge-follows-the-package rule are written down for session continuation.
+
+Verification on 4318 running 0.1.9 from the real data dir:
+  python -m pytest tests -q      -> 170 passed, 1 skipped
+  node qa/ui_probe.mjs           -> ALL UI CHECKS PASSED
+  qa/stage_full_verify.py        -> 20/20 over the packaged bridge
+  relay_rules via the deployed bridge -> stage-relay/rules/v2, section 五 present

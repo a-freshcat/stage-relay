@@ -46,6 +46,12 @@ DSH 原应用提供 workspaceRegistry.archiveSession(sessionId, {stopActivity:tr
 
 只使用任务消息指定的、属于自己成员身份的 stage-relay MCP 服务。先 relay_inbox，保留游标；进度用 relay_report，遇到困难或方案变更用 relay_raise_issue，组内讨论用 relay_send_message。paused=true 时停止推进。执行成果先提交 review，DSH 不自验；Codex 读取实际文件和检查结果后用 relay_review 核验。用户保留最后决策权。
 
+表达方式为用户定下的约定：正常交流写功能名称、问题描述和当前状态；需要追溯时在末尾附「关联事件 #…」，同一段只附一次；技术日志和排障记录保留完整的事件编号、任务 ID 与会话 ID，不改写原文。这条已经写进 `relay/rules.py` 的规则原文（`stage-relay/rules/v2`），会话续接时用 relay_rules 取回；规则文本改动后版本号必须同步提升，否则已确认旧版本的会话只会收到摘要，看不到新增条款。
+
+阶段汇总：监督判断某个阶段完成时用 relay_request_summary 带 issue_id 发起；汇总负责人用 relay_stage_summary 提交。兼任监督与汇总负责人时，relay_request_summary 带 issue_id 与 body 一次写成阶段记录，relay_stage_summary 也可以直接带 issue_id 建记录，不必等一个发给自己的请求。全部阶段与正文用 relay_stages 读回。
+
+接入配置：`connection-ownership.json` 记录的是用户授权契约（成员、端口、数据目录）。桥可执行文件必须跟随当前运行包，否则应用加载的仍是旧包的桥，`tools/list` 只会回旧工具目录——重装多少次都看不见新工具。面板启动时会自动重指一次并留备份，`/api/health` 的 `bridge_refresh` 可核对结果。
+
 不要把未知状态写成已完成。送达回执、模型返回和通过验收是三个不同阶段。
 
 ## 验证与打包

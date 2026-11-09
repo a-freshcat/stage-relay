@@ -241,6 +241,23 @@ class ContextGrowth(unittest.TestCase):
         self.assertEqual(rules.full("deepseek"), rules.full("deepseek"))
         self.assertIn("deepseek", rules.full("deepseek"))
 
+    def test_a_changed_rules_version_is_resent_in_full(self):
+        """A confirmed session must not keep stale rules after the text changes.
+
+        Only the digest travels on ordinary wakes, so a session that already holds
+        one version would never see a new section. The stored version is what makes
+        the change visible instead of silently behind.
+        """
+        self.wake("先发一次")
+        later = __import__("time").time() + 5
+        with patch("relay.runtime.time.time", return_value=later):
+            second = self.wake("同一版本再发")[0]["prompt"]
+        self.assertNotIn("一、身份与工具", second)
+        with patch.object(rules, "VERSION", "stage-relay/rules/v99"):
+            sent = self.wake("规则改版后")[0]["prompt"]
+        self.assertIn("一、身份与工具", sent)
+        self.assertIn("stage-relay/rules/v99", sent)
+
     def test_rebinding_sends_the_rules_again(self):
         self.wake("绑定一")
         self.runtime.poll("deepseek", {"app": "dsh", "sessions": self.sessions + [

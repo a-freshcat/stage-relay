@@ -1,6 +1,7 @@
 """Durable native-session bindings and delivery receipts, separate from model output."""
 
 import json
+import sqlite3
 import time
 from . import brief, rules
 from .domain import Invalid, now, uid
@@ -32,6 +33,14 @@ class Runtime:
             # binding generation (and again after a session goes quiet or comes
             # back from a gap), never on every wake.
             db.execute('CREATE TABLE IF NOT EXISTS native_rules(agent TEXT, session TEXT, generation INTEGER NOT NULL, full_sent INTEGER NOT NULL, full_confirmed INTEGER NOT NULL, compact INTEGER NOT NULL, PRIMARY KEY(agent,session))')
+            # Which rules version a session actually holds. Without it a changed
+            # rules text never reaches a session that confirmed the previous one:
+            # the digest would be the only carrier, and the full section would be
+            # silently stale. Adding the column is a no-op on a fresh database.
+            try:
+                db.execute('ALTER TABLE native_rules ADD COLUMN rules_version TEXT')
+            except sqlite3.OperationalError:
+                pass
         self.reconcile()
         self.migrate_queued()
 
@@ -69,13 +78,19 @@ class Runtime:
         compacted without telling us). Every other wake carries only the digest,
         and `relay_rules` can always return the identical full text on demand.
         """
-        row = db.execute('SELECT generation,full_sent,full_confirmed FROM native_rules WHERE agent=? AND session=?', (agent, session)).fetchone()
+        row = db.execute('SELECT generation,full_sent,full_confirmed,rules_version FROM native_rules WHERE agent=? AND session=?', (agent, session)).fetchone()
         now_ts = time.time()
         if not row or row[0] != generation:
-            db.execute('INSERT INTO native_rules VALUES(?,?,?,?,?,?) ON CONFLICT(agent,session) DO UPDATE SET generation=excluded.generation,full_sent=excluded.full_sent,full_confirmed=0',
-                       (agent, session, generation, now_ts, 0, 0))
+            db.execute('INSERT INTO native_rules VALUES(?,?,?,?,?,?,?) ON CONFLICT(agent,session) DO UPDATE SET generation=excluded.generation,full_sent=excluded.full_sent,full_confirmed=0,rules_version=excluded.rules_version',
+                       (agent, session, generation, now_ts, 0, 0, rules.VERSION))
             return rules.full(agent)
-        _, full_sent, confirmed = row
+        _, full_sent, confirmed, held_version = row
+        if held_version != rules.VERSION:
+            # The rules themselves changed: one full block per session carries the
+            # new text, then the digest is accurate again.
+            db.execute('UPDATE native_rules SET full_sent=?, full_confirmed=0, rules_version=? WHERE agent=? AND session=?',
+                       (now_ts, rules.VERSION, agent, session))
+            return rules.full(agent)
         if not confirmed and now_ts - full_sent > 60:
             db.execute('UPDATE native_rules SET full_sent=? WHERE agent=? AND session=?', (now_ts, agent, session))
             return rules.full(agent)
