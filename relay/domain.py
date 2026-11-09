@@ -865,10 +865,8 @@ class Store:
                     return True
         scannable = re.sub(r"```.*?```", " ", body or "", flags=re.S)
         scannable = re.sub(r"`[^`]*`", " ", scannable)
-        for match in re.finditer(r"@([^\s@,，。:：;；!！?？'\"()\[\]<>|`]+)", scannable):
-            if match.group(1).strip() in labels:
-                return True
-        return False
+        member_labels = {agent["name"] for agent in state["agents"] if agent.get("name")}
+        return any(token in labels for token in self._scan_tokens(scannable, labels | member_labels))
 
     @staticmethod
     def _note_user_mention(project, message, issue_id=None):
@@ -923,13 +921,13 @@ class Store:
         callers that only send text. A name nobody recognises is reported rather
         than ignored, so a typo cannot silently fall back to broadcasting.
         """
-        known = {}
+        known = {agent["id"]: agent["id"] for agent in state["agents"]}
         for agent in state["agents"]:
-            known[agent["id"]] = agent["id"]
             label = agent.get("name") or ""
-            if label and label not in known:
-                known[label] = agent["id"]
+            if label:
+                known.setdefault(label, agent["id"])
         resolved, unknown = [], []
+        user_target = False
         if isinstance(explicit, list) and explicit:
             for item in explicit:
                 target = known.get(item) if isinstance(item, str) else None
@@ -940,7 +938,7 @@ class Store:
                 elif isinstance(item, str) and item.lstrip("@").strip() in USER_LABELS:
                     # The user is a real addressee, not a typo: naming them must
                     # not be refused, and it never widens the member audience.
-                    continue
+                    user_target = True
                 else:
                     unknown.append(str(item))
         else:
@@ -950,13 +948,13 @@ class Store:
             # as happened, refused because the backtick joined the token.
             scannable = re.sub(r"```.*?```", " ", body or "", flags=re.S)
             scannable = re.sub(r"`[^`]*`", " ", scannable)
-            for token in self._scan_tokens(scannable):
+            for token in self._scan_tokens(scannable, known.keys() | USER_LABELS):
                 target = known.get(token)
                 if target:
                     resolved.append(target)
                 elif token in USER_LABELS:
                     # Writing @user addresses the user; it is resolved, not unknown.
-                    continue
+                    user_target = True
                 elif self._descriptive(token):
                     # `@N` in "shows an @N badge" is punctuation, not a person.
                     continue
@@ -969,23 +967,57 @@ class Store:
             if unknown:
                 raise Invalid("无法识别的 @ 对象：" + "、".join(sorted(set(unknown)))
                               + "。请改选成员列表中的对象；不写 @ 时会通知全组。")
-            return None, []
+            return ([] if resolved or user_target else None), []
         return chosen, sorted(set(unknown))
 
     # A token after @ is only a candidate when it looks like a name rather than
     # prose. "the @1 badge", "@ 后面", "me@example.com" and "a@b" are addressed to
     # nobody; treating them as unknown addressees rejected ordinary sentences.
-    TOKEN = re.compile(r"(?<![\w.+-])@([^\s@,，。:：;；!！?？'\"()\[\]<>|`]+)")
+    # An @ glued to ASCII word characters is usually an address ("me@example.com"),
+    # but "BUG@DeepSeek" is a mention with no space before it. Character shape
+    # cannot tell them apart, so the guard only rejects the case where what follows
+    # is NOT a known name — that check happens per match in `_scan_tokens`.
+    TOKEN = re.compile(r"@([^\s@,，。:：;；!！?？'\"()\[\]<>|`]+)")
     NAME = re.compile(r"[^\W\d_][\w.·-]*", re.UNICODE)
+    NAME_CONTINUATION = re.compile(r"[\w·-]|\.(?=[\w.·-])")
+    CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+    WORD_BEFORE = re.compile(r"[0-9A-Za-z_.+-]")
 
     @classmethod
-    def _scan_tokens(cls, text_value):
-        """Name-shaped tokens written after @, in order, without duplicates."""
+    def _scan_tokens(cls, text_value, labels=()):
+        """Match complete display names before falling back to single tokens."""
+        text_value = text_value or ""
+        labels = sorted(labels, key=len, reverse=True)
         found = []
-        for match in cls.TOKEN.finditer(text_value or ""):
-            token = match.group(1).strip().rstrip(".,;:!?）)]】」』、")
-            if cls.NAME.fullmatch(token) and token not in found:
-                found.append(token)
+        consumed = 0
+        for match in cls.TOKEN.finditer(text_value):
+            start = match.start(1)
+            if start < consumed:
+                continue
+            at = start - 1
+            # An @ inside an address (local part before it) only counts when the
+            # text right after it is a name we know; otherwise it is punctuation in
+            # the middle of a word like "me@example.com" or "BUG@something".
+            if at > 0 and cls.WORD_BEFORE.match(text_value[at - 1]) and not any(
+                    text_value.startswith(label, start) for label in labels):
+                continue
+            for label in labels:
+                end = start + len(label)
+                if text_value.startswith(label, start) and not cls.NAME_CONTINUATION.match(text_value, end):
+                    if label not in found:
+                        found.append(label)
+                    consumed = end
+                    break
+            else:
+                token = match.group(1).strip().rstrip(".,;:!?）)]】」』、")
+                # A token starting with a Chinese character can only be a label
+                # written in Chinese (the user's own names) — an actual display
+                # name is matched above. "一个@的BUG@..." is one sentence with an @
+                # in the middle, so its "的BUG" is prose, not somebody to notify.
+                if token[:1] and cls.CJK.match(token[:1]) and token not in labels:
+                    continue
+                if cls.NAME.fullmatch(token) and token not in found:
+                    found.append(token)
         return found
 
     @staticmethod

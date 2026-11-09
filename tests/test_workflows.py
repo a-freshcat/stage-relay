@@ -161,6 +161,19 @@ class Workflows(unittest.TestCase):
         self.assertTrue([e for e in self.store.inbox("deepseek")["events"]
                          if e["kind"] == "message" and e["detail"].get("issue_id") == i["id"]])
 
+    def test_picker_display_name_with_spaces_is_a_single_recipient(self):
+        i = self.issue()
+        sent = self.act("message", issue_id=i["id"], body="目前进度？\n@DeepSeek · DSH")
+        event = next(e for e in self.store.snapshot()["events"]
+                     if e["detail"].get("message_id") == sent["id"])
+        self.assertEqual(event["detail"]["recipients"], ["deepseek"])
+
+    def test_display_name_and_id_can_be_combined_in_project_chat(self):
+        sent = self.act("project_message", body="@DeepSeek · DSH、@codex 请分别说明进度")
+        event = next(e for e in self.store.snapshot()["events"]
+                     if e["detail"].get("message_id") == sent["id"])
+        self.assertEqual(event["detail"]["recipients"], ["deepseek", "codex"])
+
     def test_an_unknown_mention_is_reported_instead_of_broadcast(self):
         i = self.issue()
         with self.assertRaises(Invalid) as raised:
@@ -264,7 +277,10 @@ class Workflows(unittest.TestCase):
         first = self.issue()
         second = self.issue()
         # Addressed to the user in three different ways that must all count.
-        self.act("message", "deepseek", issue_id=first["id"], body="@user 交付依据已补齐")
+        user_message = self.act("message", "deepseek", issue_id=first["id"], body="@user 交付依据已补齐")
+        event = next(e for e in self.store.snapshot()["events"]
+                     if e["detail"].get("message_id") == user_message["id"])
+        self.assertEqual(event["detail"]["recipients"], [])
         self.act("message", "deepseek", issue_id=first["id"], body="@我 请确认是否继续")
         self.act("message", "deepseek", issue_id=first["id"], body="汇报", mentions=["user"])
         # Not addressed: an ordinary member message and a code sample that only
@@ -316,6 +332,26 @@ class Workflows(unittest.TestCase):
         self.assertTrue(real["body"])
         with self.assertRaises(Invalid):
             self.act("message", "deepseek", issue_id=i["id"], body="请 @coedx 核验")
+
+    def test_a_mention_glued_to_a_word_still_addresses_the_member(self):
+        """The user's own sentence: "修了一个@的BUG@DeepSeek · DSH".
+
+        The @ before the name follows an ASCII letter, which looks like an email
+        local part. Shape cannot decide it; a known name after the @ can.
+        """
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()
+        sent = self.act("message", "user", issue_id=i["id"],
+                        body="没有收到是出BUG了吗？我刚修复了一个@的BUG@DeepSeek · DSH")
+        events = [e for e in self.store.inbox("deepseek")["events"]
+                  if e["kind"] == "message" and e["detail"].get("issue_id") == i["id"]]
+        self.assertEqual(events[-1]["detail"]["recipients"], ["deepseek"], events[-1])
+        self.assertTrue(sent["body"])
+        # An address is still not a mention, even with a name after the @… only
+        # when it is a real address of that member.
+        plain = self.act("message", "user", issue_id=i["id"], body="发到 me@example.com 即可")
+        self.assertTrue(plain["body"])
 
     def test_a_mention_inside_code_is_not_a_mention(self):
         """Talking about `@codex` must not route to codex, nor be refused."""

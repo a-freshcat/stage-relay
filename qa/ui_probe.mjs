@@ -59,7 +59,7 @@ const FileReader = class { readAsDataURL() { this.onerror?.(new Error('unused'))
 `;
 
 const epilogue = `
-globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, resolveMentions, decisions, openStage, openStages, render, renderKey, actions, comparableState, issueCard, issuesPage, mentionCount, settleMentions, openMention};
+globalThis.__probe = {ui, state: () => state, overview, date, datetime, closedRail, execLog, cards, settingsPage, bootMessage, forgetProject, cleanupPreview, closeProject, chat, currentThread, node, document, listeners, poll, nativeInfo, roleStatus, presence, effortField, decisions, openStage, openStages, render, renderKey, actions, comparableState, issueCard, issuesPage, mentionCount, settleMentions, openMention};
 export {};
 `;
 
@@ -241,12 +241,9 @@ check('不要求用户删锁或关共享应用', !/(请|你需要|建议)[^。]{
 rtState.codexNative = [];
 rtState.runtime.bindings = [];
 
-// Mention routing: naming one member must resolve to that member's id, and must
-// not silently resolve to everyone (the user's complaint about @Codex waking all).
-check('@ 解析为真实成员 id', JSON.stringify(probe.resolveMentions('@codex 请看这条')) === '["codex"]');
-check('@ 多个成员取并集', JSON.stringify(probe.resolveMentions('@codex @deepseek 一起看')) === '["codex","deepseek"]');
-check('没有 @ 时不发送 mentions', probe.resolveMentions('大家都看一下').length === 0);
-check('@ 无关名字不产生 mentions', probe.resolveMentions('@nobody 这是谁').length === 0);
+// Mention routing now happens on the server, which sees display names and ids the
+// page cannot resolve alone. The page sends the body only, so there is nothing to
+// widen the audience from the client; that is asserted by the Python tests.
 
 // Stage summaries are deliverables: the rail may list only recent titles, but the
 // text and the whole history must open from the panel, and a resolved issue with

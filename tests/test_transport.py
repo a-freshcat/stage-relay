@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from relay.domain import Store
@@ -50,7 +51,7 @@ class Transport(unittest.TestCase):
     def agent_http(self, action, args=None, agent="deepseek"):
         return self.http("POST","/bridge",{"action":action,"args":args or {}},{"Content-Type":"application/json","Authorization":"Bearer "+self.server.credentials[agent]})
 
-    def mcp(self, agent, calls):
+    def mcp(self, agent, calls, env=None):
         requests = [
             {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"relay-test","version":"1"}}},
             {"jsonrpc":"2.0","method":"notifications/initialized"},
@@ -58,11 +59,37 @@ class Transport(unittest.TestCase):
         requests.extend({"jsonrpc":"2.0","id":n+2,"method":"tools/call","params":{"name":name,"arguments":args}} for n,(name,args) in enumerate(calls))
         executable = os.environ.get("RELAY_TEST_BRIDGE_EXE")
         command = [executable] if executable else [sys.executable,str(ROOT / "bridge.py")]
-        completed = subprocess.run(command+["--agent",agent,"--port",str(self.port),"--data-dir",self.temp.name], input="\n".join(json.dumps(r) for r in requests)+"\n", text=True,encoding="utf-8",capture_output=True,timeout=20,cwd=ROOT)
+        completed = subprocess.run(command+["--agent",agent,"--port",str(self.port),"--data-dir",self.temp.name], input="\n".join(json.dumps(r) for r in requests)+"\n", text=True,encoding="utf-8",capture_output=True,timeout=20,cwd=ROOT,env=env)
         self.assertEqual(completed.returncode,0,completed.stderr)
         responses = [json.loads(line) for line in completed.stdout.splitlines()]
         self.assertEqual(len(responses),len(calls)+1)
         return responses[1:]
+
+    def test_mcp_inbox_bypasses_inherited_http_proxy(self):
+        requests = []
+
+        class Proxy(BaseHTTPRequestHandler):
+            def do_POST(self):
+                requests.append(self.path)
+                self.send_response(502)
+                self.end_headers()
+                self.wfile.write(b"Proxy rejected local request")
+
+            def log_message(self, *args):
+                pass
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Proxy) as proxy:
+            thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+            thread.start()
+            try:
+                env = {key: value for key, value in os.environ.items() if not key.lower().endswith("_proxy")}
+                env.update(HTTP_PROXY=f"http://127.0.0.1:{proxy.server_port}", NO_PROXY="example.invalid")
+                reply, = self.mcp("codex", [("relay_inbox", {})], env=env)
+                self.assertFalse(reply["result"]["isError"], reply["result"]["content"])
+                self.assertEqual(requests, [])
+            finally:
+                proxy.shutdown()
+                thread.join(timeout=3)
 
     def test_ui_api_requires_cookie_origin_and_header(self):
         self.assertEqual(self.http("GET","/api/state")[0],403)

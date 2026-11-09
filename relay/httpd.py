@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import logging
 import mimetypes
 import os
 import secrets
@@ -526,11 +527,13 @@ class Handler(BaseHTTPRequestHandler):
         except (Invalid, NativeError, TimeoutError, ValueError, KeyError, TypeError, AttributeError) as exc:
             self.close_connection = True
             self.json({"error": str(exc)}, 400)
-        except OSError:
+        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             self.close_connection = True
-            self.json({"error": "本地文件暂时无法写入，请检查应用目录权限后重新检测。"}, 400)
-        except (ConnectionResetError, BrokenPipeError):
-            pass
+        except OSError as exc:
+            self.close_connection = True
+            logging.getLogger(__name__).warning("Panel operation failed: %s (errno=%s, winerror=%s)",
+                                               type(exc).__name__, exc.errno, getattr(exc, "winerror", None))
+            self.json({"error": "本地操作暂时失败，原因已记录到面板日志。"}, 500)
 
 
 def main():

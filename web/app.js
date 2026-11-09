@@ -658,29 +658,11 @@ async function sendMessage() {
   if (t.locked) return toast('任务已结束，群聊为只读记录。');
   ui.submitting = true;
   try {
-    // Structured mentions: the server resolves and validates them, so naming one
-    // member does not wake the whole team. Pure-text @ still works for callers
-    // that cannot send ids.
-    const mentioned = resolveMentions(body || '');
-    const extra = mentioned.length ? {mentions:mentioned} : {};
-    if (t.mode === 'project') await mutate('project_message',{body:body || '分享了附件',attachments:files,...extra});
-    else await mutate('message',{issue_id:t.id,body:body || '分享了附件',attachments:files,...extra});
+    const message = {body:body || '分享了附件',attachments:files};
+    if (t.mode === 'project') await mutate('project_message',message);
+    else await mutate('message',{issue_id:t.id,...message});
     ui.drafts[t.id] = ''; ui.files[t.id] = []; saveChat(); render();
   } finally {ui.submitting = false; render();}
-}
-// Resolve `@token` against the real member ids and display names, so what the
-// server receives is an id it can verify rather than a guess from the text.
-function resolveMentions(body){
-  const found = [];
-  // Code spans describe mentions rather than make them, so they are dropped
-  // before scanning — same rule the server applies.
-  const scannable = (body || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ');
-  for (const match of scannable.matchAll(/@([^\s@,，。:：;；!！?？'"()\[\]<>|`]+)/g)) {
-    const token = match[1].trim();
-    const agent = (state.agents || []).find(a => a.id === token || a.name === token);
-    if (agent && !found.includes(agent.id)) found.push(agent.id);
-  }
-  return found;
 }
 async function recordRecycle(kind,itemId,issueId){
   const label={task:'工作板块',issue:'议题',project_message:'群聊消息',issue_message:'议题消息'}[kind]||'记录';
@@ -796,7 +778,14 @@ const actions = {
     const list = t.members.filter(id => id !== 'user');
     openModal('提及成员',`<p class="modal-lead">${t.mode === 'project' ? '选择项目成员' : '选择成员'}，将名字插入消息；${t.mode === 'project' ? '项目群聊对所有任务成员可见' : '议题中的所有成员都可以读取群聊'}。</p><div class="stack">${list.length ? list.map(id => btn('insert-mention',esc(name(id)),'plus','',`data-agent="${id}"`)).join('') : '<div class="empty">当前项目还没有其他成员。</div>'}</div>`);
   },
-  'insert-mention':el => {const t=currentThread();if(t)ui.drafts[t.id]=(ui.drafts[t.id] || '')+`@${name(el.dataset.agent)} `;closeModal();render();$('#chat-input')?.focus();},
+  'insert-mention':el => {
+    const t = currentThread();
+    const id = el.dataset.agent;
+    const label = name(id);
+    const ambiguous = state.agents.some(a => a.id !== id && (a.id === label || a.name === label));
+    if (t) ui.drafts[t.id] = (ui.drafts[t.id] || '') + `@${ambiguous ? id : label} `;
+    closeModal(); render(); $('#chat-input')?.focus();
+  },
 };
 
 // A rebuild between mousedown and mouseup removes the pressed element, so the

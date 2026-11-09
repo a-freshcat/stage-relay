@@ -11,8 +11,7 @@ import json
 import secrets
 import sys
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from http.client import HTTPConnection, HTTPException
 from . import __version__, rules
 
 
@@ -69,14 +68,29 @@ class Bridge:
         if not token:
             raise ValueError("成员尚未登记，请在面板中创建并复制接入配置。")
         body = json.dumps({"action": action, "args": args}, ensure_ascii=False).encode("utf-8")
-        request = Request(f"http://127.0.0.1:{self.port}/bridge", data=body, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+        # This credential is scoped to the local panel. Connect directly so the
+        # host application's proxy settings cannot redirect the bridge request.
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=15)
         try:
-            with urlopen(request, timeout=15) as response:
-                return json.load(response)["result"]
-        except HTTPError as exc:
-            raise ValueError(json.load(exc).get("error", "面板拒绝此操作。")) from None
-        except URLError:
-            raise ValueError("无法连接面板，请先启动 Stage Relay。") from None
+            connection.request("POST", "/bridge", body=body, headers={
+                "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+            })
+            response = connection.getresponse()
+            status, raw = response.status, response.read()
+        except (HTTPException, OSError):
+            raise ValueError(f"无法连接本机 Stage Relay 面板（端口 {self.port}）。") from None
+        finally:
+            connection.close()
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            raise ValueError(f"本机面板返回了无法读取的响应（端口 {self.port}，HTTP {status}）。") from None
+        if status != 200:
+            message = payload.get("error") if isinstance(payload, dict) else None
+            raise ValueError(message or f"本机面板拒绝此操作（HTTP {status}）。")
+        if not isinstance(payload, dict) or "result" not in payload:
+            raise ValueError("本机面板的响应缺少协作结果，请核对面板与桥接版本。")
+        return payload["result"]
 
     def handle(self, request):
         if not isinstance(request, dict) or request.get("jsonrpc") != "2.0" or not isinstance(request.get("method"), str):
