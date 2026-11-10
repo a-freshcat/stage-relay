@@ -1,0 +1,26 @@
+{
+ "what": "共享 headless 实例的真实渲染层可经 CDP 驱动（本轮新能力）",
+ "endpoints": {
+  "electron_cdp": "http://127.0.0.1:52207  (来自 %APPDATA%/Antigravity/DevToolsActivePort)",
+  "ls_https": "https://127.0.0.1:52211",
+  "ls_http": "http://127.0.0.1:52212"
+ },
+ "real_page": "https://127.0.0.1:52211/c/1d00906e-73a0-4b0b-97b2-f9d6f7101726  (title: Agent Executor EOF Error - Standalone - Antigravity)",
+ "proven": {
+  "Runtime.evaluate_in_real_renderer": "返回 document.title + location.href，成功",
+  "__APP_CONFIG__": "productName / csrfToken / appVersion / releaseChannel / devMode",
+  "renderer_issued_StartCascade": "页面内 fetch 成功 200 {\"cascadeId\":\"2c30a00c-...\"}，并录到完整 POST 请求"
+ },
+ "not_proven": {
+  "real_ui_send": "该页面停在 Agent Executor EOF Error 状态，不是可正常发送的会话，未取得真实成功发送的请求体",
+  "https_same_result": "改走 https://52211 仍报 plan model not specified",
+  "tool_execution": "qa/ag-native/workspace 仍为空"
+ },
+ "copy_correction": {
+  "antigravity": "CreationTime 2026-10-27 02:29:26（原件）",
+  "antigravity-ide": "CreationTime 2026-11-10 19:47:39（新建，非合并）",
+  "antigravity-backup": "CreationTime 2026-11-10 19:47:54（新建，非合并）",
+  "note": "创建时间证明是新建目录；但“内容与原件逐字一致”我没有验证，不作断言。未删除、未递归扫描。"
+ },
+ "no_cleanup_done": "两份副本原样保留，本轮未删除、未移动"
+}
