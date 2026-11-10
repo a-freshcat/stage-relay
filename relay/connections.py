@@ -241,6 +241,19 @@ class Connections:
             if temp.exists():
                 temp.unlink()
         agent = plan["agent"]
+        # The user's authorization is "登记 ownership 之前必须先验证". So read the
+        # file back and prove three things before touching the journal: the JSON
+        # still parses, our entry is exactly what we intended to write, and every
+        # other server is byte-identical to the snapshot taken before writing.
+        problem = self.verify_written(target, plan, agent)
+        if problem:
+            # Never record success for a write we could not prove. Roll back only
+            # while the file is still exactly what this commit wrote: a third
+            # party may have edited it since, and that must not be discarded.
+            rolled = self.rollback(target, plan["updated"], backup)
+            del self.plans[plan_id]
+            raise Invalid(f"写入后校验未通过：{problem}。"
+                          f"{'已回滚到写入前内容。' if rolled else '目标已被第三方修改，未回滚，备份保留。'}")
         if plan["remove"]:
             self.owned.pop(agent["id"], None)
         else:
@@ -248,4 +261,92 @@ class Connections:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.journal.write_text(json.dumps(self.owned, ensure_ascii=False), encoding="utf-8")
         del self.plans[plan_id]
-        return {"agent_id": agent["id"], "configured": not plan["remove"], "path": str(target), "backup": str(backup) if backup else None, "verified": False, "notice": "已撤销接入配置。" if plan["remove"] else "配置已完成，等待应用重新加载并响应。"}
+        return {"agent_id": agent["id"], "configured": not plan["remove"], "path": str(target),
+                "backup": str(backup) if backup else None, "verified": True,
+                "notice": "已撤销接入配置。" if plan["remove"] else "配置已写入并通过读回校验；应用重新加载后才会响应。"}
+
+    def verify_written(self, target, plan, agent):
+        """Returns a problem description, or None when the write is proved good."""
+        try:
+            written = target.read_bytes()
+        except OSError as error:
+            return f"无法读回配置：{error}"
+        if written != plan["updated"]:
+            return "读回内容与计划写入的内容不一致"
+        server = "stage-relay-" + agent["id"]
+        text = written.decode("utf-8")
+        try:
+            kind = self.target(agent)[1]
+        except Invalid as error:
+            return str(error)
+        if kind == "toml":
+            # Codex keeps toml under mcp_servers; the marker block is the record.
+            try:
+                content = tomllib.loads(text)
+            except (ValueError, UnicodeError):
+                return "读回的配置不是合法 TOML"
+            present = server in content.get("mcp_servers", {})
+            if plan["remove"]:
+                if present:
+                    return f"撤销后仍存在 {server}"
+            elif not present:
+                return f"{server} 未写入"
+            marker = f"# BEGIN Stage Relay: {agent['id']}"
+            if not plan["remove"] and marker not in text:
+                return "写入的标记块缺失"
+            return None
+        if kind != "json":
+            # DSH keeps an independently scoped entry; presence is what the
+            # panel owns, and re-parsing its YAML here would duplicate the
+            # validator that prepare already ran.
+            present = re.search(r"^\s*-\s*id:\s*['\"]?" + re.escape(server), text, re.M) is not None
+            if plan["remove"] and present:
+                return f"撤销后仍存在 {server}"
+            if not plan["remove"] and not present:
+                return f"{server} 未写入"
+            return None
+        try:
+            after = json.loads(text)
+        except (ValueError, UnicodeError):
+            return "读回的配置不是合法 JSON"
+        servers = after.get("mcpServers")
+        if not isinstance(servers, dict):
+            return "读回的配置缺少 mcpServers"
+        if plan["remove"]:
+            if server in servers:
+                return f"撤销后仍存在 {server}"
+        elif servers.get(server) != self.entry(agent):
+            return f"{server} 与预期的桥接条目不一致"
+        try:
+            before = json.loads((plan["original"] or b"{}").decode("utf-8"))
+        except (ValueError, UnicodeError):
+            before = {}
+        untouched = {k: v for k, v in (before.get("mcpServers") or {}).items() if k != server}
+        actual = {k: v for k, v in servers.items() if k != server}
+        if actual != untouched:
+            changed = sorted(set(actual) ^ set(untouched))
+            return f"其他 MCP 条目被改动：{', '.join(changed) or '内容不一致'}"
+        return None
+
+    def rollback(self, target, written, backup):
+        """Restore only when the target is still what this commit wrote."""
+        try:
+            if target.read_bytes() != written:
+                return False
+        except OSError:
+            return False
+        if not backup or not backup.exists():
+            return False
+        temp = target.with_name(target.name + ".stage-relay-" + secrets.token_hex(4) + ".tmp")
+        try:
+            temp.write_bytes(backup.read_bytes())
+            atomic_replace(temp, target)
+            return True
+        except OSError:
+            return False
+        finally:
+            if temp.exists():
+                try:
+                    temp.unlink()
+                except OSError:
+                    pass

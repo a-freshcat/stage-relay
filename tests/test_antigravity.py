@@ -108,6 +108,37 @@ class Completion(unittest.TestCase):
     def test_a_pending_user_turn_is_not_finished(self):
         self.assertFalse(finished([{"type": USER}]))
 
+    def test_a_pending_tool_after_a_done_message_is_not_finished(self):
+        """A newer unfinished tool outranks an older done message.
+
+        Walking back to the first done assistant step would call this finished
+        while the app is still writing the file.
+        """
+        steps = [
+            {"type": USER},
+            {"type": ASSISTANT, "status": "CORTEX_STEP_STATUS_DONE"},
+            {"type": TOOL, "status": "CORTEX_STEP_STATUS_RUNNING",
+             "metadata": {"toolCall": {"name": "write_file"}}},
+        ]
+        self.assertFalse(finished(steps))
+
+    def test_a_stale_error_does_not_end_a_recovered_turn(self):
+        """An error from an earlier attempt must not settle a newer turn."""
+        steps = [
+            {"type": ERROR},
+            {"type": USER},
+            {"type": ASSISTANT, "status": "CORTEX_STEP_STATUS_RUNNING"},
+        ]
+        self.assertFalse(finished(steps))
+
+    def test_a_done_tool_followed_by_a_done_message_is_finished(self):
+        steps = [
+            {"type": USER},
+            {"type": TOOL, "status": "CORTEX_STEP_STATUS_DONE"},
+            {"type": ASSISTANT, "status": "CORTEX_STEP_STATUS_DONE"},
+        ]
+        self.assertTrue(finished(steps))
+
 
 if __name__ == "__main__":
     unittest.main()

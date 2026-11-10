@@ -212,15 +212,35 @@ def activity_of(steps, seen=None):
 
 
 def finished(steps):
-    """True once the app stopped producing new work after a user turn."""
+    """True only when the newest work in the trajectory is settled.
+
+    Walking backwards until *any* done assistant message is found would call a
+    turn finished while a newer tool call is still pending, and a stale error
+    from an earlier attempt would end a turn that has since recovered. So the
+    judgement starts at the tail and stops at the first step that settles the
+    question.
+
+    Returning False when unsure is deliberate: a caller polling again costs one
+    round trip, while calling a running turn finished stops the relay from
+    reporting what the app actually produced.
+    """
     if not steps:
         return False
     for step in reversed(steps):
-        if step.get("type") == ERROR_STEP:
+        kind = step.get("type")
+        status = step.get("status")
+        if kind == USER_STEP:
+            # The turn never got going, or it is still queued.
+            return False
+        if kind == TOOL_STEP and status != "CORTEX_STEP_STATUS_DONE":
+            # A tool that has not finished: anything before it is older news.
+            return False
+        if kind == ERROR_STEP:
             return True
-        if step.get("type") == ASSISTANT_STEP and step.get("status") == "CORTEX_STEP_STATUS_DONE":
-            # An assistant message that is done and has no pending tool after it.
-            return True
+        if kind == ASSISTANT_STEP:
+            if status == "CORTEX_STEP_STATUS_DONE":
+                return True
+            return False
     return False
 
 

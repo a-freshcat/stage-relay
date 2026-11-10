@@ -100,7 +100,9 @@ class ConnectionSetup(unittest.TestCase):
         self.assertEqual(config["mcp_servers"]["other"]["command"],"keep-command")
         self.assertIn("stage-relay-codex",config["mcp_servers"])
         self.assertEqual(Path(result["backup"]).read_text(encoding="utf-8"),original)
-        self.assertFalse(result["verified"])
+        # The commit now reads the file back; `verified` means the read-back
+        # check passed, not that the app has picked the bridge up yet.
+        self.assertTrue(result["verified"])
 
     def test_stale_plan_cannot_overwrite_concurrent_edits(self):
         target=self.home / ".codex/config.toml"
@@ -156,6 +158,46 @@ class ConnectionSetup(unittest.TestCase):
         after=json.loads(target.read_text(encoding="utf-8"))["mcpServers"]
         self.assertEqual(after["other"],{"command":"x"})
         self.assertNotEqual(after["stage-relay-antigravity"],stale)
+
+    def test_a_write_that_fails_read_back_is_rolled_back_and_not_recorded(self):
+        """Ownership is only recorded after the file proves what was written.
+
+        If the read-back disagrees, the journal must stay untouched: claiming a
+        successful adoption we cannot demonstrate is exactly the failure mode
+        that would leave an unusable bridge behind.
+        """
+        target=self.home / ".gemini/config/mcp_config.json"
+        original=json.dumps({"mcpServers":{"other":{"command":"keep"}}})
+        self.write(target,original)
+        plan=self.connections.prepare(self.anti)
+        before=json.loads(self.connections.journal.read_text(encoding="utf-8")) if self.connections.journal.exists() else {}
+        self.connections.verify_written=lambda *a, **k: "注入的校验失败"
+        with self.assertRaises(Invalid):
+            self.connections.commit(plan["plan_id"],True)
+        # Rolled back because the file was still exactly what this commit wrote.
+        self.assertEqual(target.read_text(encoding="utf-8"),original)
+        after=json.loads(self.connections.journal.read_text(encoding="utf-8")) if self.connections.journal.exists() else {}
+        self.assertEqual(after,before)
+        self.assertNotIn("antigravity",after)
+
+    def test_a_third_party_edit_after_our_write_is_not_rolled_back(self):
+        """Rollback must never discard someone else's newer edit."""
+        target=self.home / ".gemini/config/mcp_config.json"
+        self.write(target,json.dumps({"mcpServers":{}}))
+        plan=self.connections.prepare(self.anti)
+        self.connections.verify_written=lambda *a, **k: "注入的校验失败"
+        # Simulate a third party rewriting the file after our write.
+        def fake_replace(temp, dest):
+            dest.write_text(json.dumps({"mcpServers":{"someone":"else"}}),encoding="utf-8")
+        import relay.connections as mod
+        original_replace=mod.atomic_replace
+        mod.atomic_replace=fake_replace
+        try:
+            with self.assertRaises(Invalid):
+                self.connections.commit(plan["plan_id"],True)
+        finally:
+            mod.atomic_replace=original_replace
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["mcpServers"],{"someone":"else"})
 
     def test_malformed_config_is_not_changed(self):
         target=self.home / ".gemini/config/mcp_config.json"
