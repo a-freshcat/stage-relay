@@ -28,7 +28,7 @@ from .codex import CodexManager, NativeError
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
-USER_ACTIONS = {"project_create", "workspace_set", "demo_create", "demo_reset", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "summary_request", "invite", "issue_create", "message", "project_message", "project_close", "record_archive", "record_restore", "project_forget", "project_restore", "mentions_read", "report_request", "report_fail"}
+USER_ACTIONS = {"project_create", "workspace_set", "demo_create", "demo_reset", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "summary_request", "invite", "remove_member", "issue_create", "message", "project_message", "project_close", "record_archive", "record_restore", "project_forget", "project_restore", "mentions_read", "report_request", "report_fail"}
 SETTINGS_KINDS = {
     # Only these app-level leftovers may ever be listed for cleanup, and only
     # after the referenced project is gone. Sessions and credentials are not here.
@@ -545,6 +545,13 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 if action == "agent_save":
                     self.server.refresh_credentials()
+                if action == "remove_member":
+                    # A removed member must not be woken for this issue again.
+                    # Only undelivered work is revoked; a lease already handed to
+                    # the app is left alone, since it may be acting on it.
+                    member = args.get("agent_id")
+                    self.server.runtime.cancel_member_issue(
+                        args.get("project_id"), member, args.get("issue_id"))
                 if action == 'assign':
                     reviewer=next((a for a in self.server.store.snapshot()['agents'] if a['id']==result['assignments']['planner']),None)
                     if reviewer and reviewer['app']=='codex' and reviewer.get('setup',{}).get('configured') and self.server.codex.enabled:

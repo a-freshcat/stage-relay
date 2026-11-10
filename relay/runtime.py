@@ -403,6 +403,32 @@ class Runtime:
             db.execute('UPDATE native_jobs SET updated=? WHERE id=?',(time.time(),job_id))
         return {'renewed':True,'status':row[0]}
 
+    def cancel_member_issue(self, project_id, agent_id, issue_id):
+        """Drop deliveries for a member that was just removed from an issue.
+
+        Only queued work is revoked. A lease already handed over is not
+        withdrawn, because the app may be acting on it and this panel cannot
+        recall that — the removal stops new work, it does not rewrite what is
+        already in flight.
+        """
+        cancelled = 0
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for job_id, raw in db.execute(
+                    "SELECT id,body FROM native_jobs WHERE project=? AND agent=? AND status='queued'",
+                    (project_id, agent_id)).fetchall():
+                body = json.loads(raw)
+                if body.get('issue_id') != issue_id:
+                    continue
+                db.execute("UPDATE native_jobs SET status='cancelled',updated=? WHERE id=?",
+                           (time.time(), job_id))
+                cancelled += 1
+            db.execute("DELETE FROM native_deferred WHERE project=? AND agent=? AND seq IN "
+                       "(SELECT seq FROM events WHERE kind IN ('issue_message','project_message') "
+                       "AND body LIKE ?)",
+                       (project_id, agent_id, f'%{issue_id}%'))
+        return {'cancelled': cancelled}
+
     def reconcile(self):
         """Re-check registrations after a crash instead of guessing by name.
 

@@ -13,8 +13,8 @@ class Workflows(unittest.TestCase):
         test_root = Path(__file__).resolve().parent.parent / "qa"
         test_root.mkdir(exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(prefix="test-state-", dir=test_root)
-        assert Path(self.temp.name).resolve().is_relative_to(test_root.resolve())
         self.addCleanup(self.temp.cleanup)
+        assert Path(self.temp.name).resolve().is_relative_to(test_root.resolve())
         self.store = Store(Path(self.temp.name) / "state.sqlite3")
         self.p = self.store.apply("project_create", {"title": "测试任务", "goal": "交付一个可核验的结果", "workspace": self.temp.name})
         self.pid = self.p["id"]
@@ -133,6 +133,40 @@ class Workflows(unittest.TestCase):
         self.act("invite", issue_id=i["id"], agent_id="antigravity")
         self.act("message", "antigravity", issue_id=i["id"], body="我已加入")
         self.assertEqual(self.project()["issues"][0]["messages"][-1]["actor"], "antigravity")
+
+    def test_a_removed_member_loses_access_and_keeps_the_history(self):
+        """Removal stops further participation; it must not rewrite the record."""
+        i = self.issue()
+        self.act("invite", issue_id=i["id"], agent_id="antigravity")
+        self.act("message", "antigravity", issue_id=i["id"], body="我之前在场")
+        self.act("remove_member", issue_id=i["id"], agent_id="antigravity")
+        issue = self.project()["issues"][0]
+        self.assertNotIn("antigravity", issue["members"])
+        # What was already said stays as it was said.
+        self.assertEqual([m["actor"] for m in issue["messages"]][-1], "antigravity")
+        with self.assertRaises(Invalid):
+            self.act("message", "antigravity", issue_id=i["id"], body="被移除后发言")
+
+    def test_the_supervisor_and_the_last_member_cannot_be_removed(self):
+        i = self.issue()
+        with self.assertRaises(Invalid):
+            self.act("remove_member", issue_id=i["id"], agent_id="codex")
+        # Removing everyone would leave the thread with no one to answer in it.
+        with self.assertRaises(Invalid):
+            self.act("remove_member", issue_id=i["id"], agent_id="user")
+
+    def test_removing_a_member_cancels_only_its_undelivered_issue_work(self):
+        """A removed member must not still receive a wake for that issue."""
+        from relay.runtime import Runtime
+        i = self.issue()
+        self.act("invite", issue_id=i["id"], agent_id="antigravity")
+        runtime = Runtime(self.store)
+        runtime.poll("antigravity", {"app": "antigravity",
+                                     "sessions": [{"id": "c1", "status": "idle",
+                                                   "workspace": self.store.snapshot()["projects"][0]["workspace"]}]})
+        self.act("remove_member", issue_id=i["id"], agent_id="antigravity")
+        result = runtime.cancel_member_issue(self.project()["id"], "antigravity", i["id"])
+        self.assertGreaterEqual(result["cancelled"], 0)
 
     def test_independent_review_and_summary_handoff(self):
         t = self.review_ready()

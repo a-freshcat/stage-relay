@@ -281,7 +281,7 @@ const activeProject = () => (state?.projects || []).find(x => x.id === ui.projec
 function issueCard(i, full = false, project) {
   const unread = mentionCount(project || activeProject(), i.id);
   const dot = unread ? `<b class="mention-dot" data-action="open-issue-mention" data-issue="${i.id}" title="有 ${unread} 条提到你的未读消息">${unread}</b>` : '';
-  return `<article class="issue-card ${unread ? 'has-mention' : ''}"><div class="row between"><button class="issue-title" data-action="open-issue" data-issue="${i.id}">${esc(i.title)}</button>${dot}${badge(i.status === 'open' ? (i.options.length ? '待决定' : '讨论中') : '已解决', i.status === 'open' ? 'amber' : 'green')}</div><div class="issue-meta">发起：${esc(name(i.creator))} <span aria-hidden="true">·</span> 群主：我${full ? ` · ${esc(datetime(i.created))}` : ''}</div><div class="issue-bottom"><div class="member-chips">${chip('user')}${i.members.map(chip).join('')}${btn('invite','邀请成员','plus','ghost',`data-issue="${i.id}"`)}</div>${btn('open-issue',`打开群聊${full ? ` · ${i.messages.filter(m=>!m.archived).length}` : ''}`,'chat','',`data-issue="${i.id}"`)}${btn('record-archive','回收议题','close','ghost',`data-kind="issue" data-item="${i.id}"`)}</div></article>`;
+  return `<article class="issue-card ${unread ? 'has-mention' : ''}"><div class="row between"><button class="issue-title" data-action="open-issue" data-issue="${i.id}">${esc(i.title)}</button>${dot}${badge(i.status === 'open' ? (i.options.length ? '待决定' : '讨论中') : '已解决', i.status === 'open' ? 'amber' : 'green')}</div><div class="issue-meta">发起：${esc(name(i.creator))} <span aria-hidden="true">·</span> 群主：我${full ? ` · ${esc(datetime(i.created))}` : ''}</div><div class="issue-bottom"><div class="member-chips">${chip('user')}${i.members.map(chip).join('')}${btn('invite','邀请成员','plus','ghost',`data-issue="${i.id}"`)}${i.members.length>1?btn('remove-member','移出','minus','ghost',`data-issue="${i.id}" aria-label="移出成员"`):''}</div>${btn('open-issue',`打开群聊${full ? ` · ${i.messages.filter(m=>!m.archived).length}` : ''}`,'chat','',`data-issue="${i.id}"`)}${btn('record-archive','回收议题','close','ghost',`data-kind="issue" data-item="${i.id}"`)}</div></article>`;
 }
 function overview(p) {
   const openProject = (p.chat?.length ? `项目群聊 · ${p.chat.length}` : '项目群聊') + (mentionCount(p,'project') ? ` · @${mentionCount(p,'project')} 未读` : '');
@@ -434,7 +434,7 @@ function chat(p = current()) {
   const files = ui.files[t.id] || [];
   const close = ui.standalone ? btn('back','返回总览','arrow','ghost') : `<button class="icon-btn" data-action="popout" title="在独立窗口打开群聊" aria-label="在独立窗口打开群聊">${icon('external')}</button><button class="icon-btn" data-action="close-chat" title="收起群聊" aria-label="收起群聊">${icon('close')}</button>`;
   const members = t.members.filter(id => id !== 'user');
-  const inviteBtn = project ? '' : btn('invite','','plus','ghost',`data-issue="${t.issue.id}" aria-label="邀请成员"`);
+  const inviteBtn = project ? '' : btn('invite','','plus','ghost',`data-issue="${t.issue.id}" aria-label="邀请成员"`)+btn('remove-member','','minus','ghost',`data-issue="${t.issue.id}" aria-label="移出成员"`);
   const note = t.locked ? '<div class="chat-note">任务已结束：群聊保留为只读记录，历史消息与决定仍可导出。</div>' : p.demo ? '<div class="chat-note">演示任务：可体验交互，不会请求模型或收到真实 AI 回复。</div>' : `<div class="chat-note">${project ? '项目群聊对所有任务成员可见；' : ''}消息进入成员信箱，应用主动读取后才能响应。Ctrl / ⌘ + Enter 发送</div>`;
   const composer = t.locked ? '' : `<div class="chat-composer"><textarea id="chat-input" data-focus="chat-input" maxlength="12000" placeholder="${project ? '向项目成员说明进度、提问或交接…' : '发消息，或 @ 指定成员…'}" aria-label="群聊消息">${esc(draft)}</textarea><div class="draft-files">${files.map((f,index) => `<span class="draft-file"><span>${esc(f.name)}</span><button data-action="remove-file" data-index="${index}" aria-label="移除附件 ${esc(f.name)}">×</button></span>`).join('')}</div><div class="composer-tools"><div class="row"><button class="icon-btn" data-action="attach" aria-label="添加附件" title="添加附件（每个不超过 5 MB）">${icon('attach')}</button><button class="icon-btn" data-action="attach-image" aria-label="添加图片" title="添加图片">${icon('image')}</button><button class="icon-btn" data-action="mention" aria-label="提及成员" title="提及成员">@</button></div><button class="send-btn" data-action="send" aria-label="发送消息" title="发送消息" ${ui.submitting ? 'disabled' : ''}>${icon('send')}</button></div></div>`;
   const meta = project ? `任务：${esc(p.title)} &nbsp; · &nbsp; 群主：我` : `发起：${esc(name(t.issue.creator))} &nbsp; · &nbsp; 群主：我`;
@@ -548,6 +548,18 @@ function invite(issueId) {
   if (!remaining.length) return toast('所有成员都已在这个议题中。');
   openModal('邀请成员',`${field('加入议题的成员',`<select class="input" name="agent_id">${remaining.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>`)}${formActions('邀请加入')}`,async form => {
     await mutate('invite',{issue_id:issueId,agent_id:new FormData(form).get('agent_id')}); closeModal(); toast('成员已加入议题。');
+  });
+}
+function removeMember(issueId) {
+  const i = current().issues.find(i => i.id === issueId);
+  const project = current();
+  // The supervisor runs the thread and the last member is the one who can still
+  // answer, so neither is offered for removal.
+  const removable = i.members.filter(a => a !== project.assignments.planner);
+  if (removable.length < 1 || i.members.length <= 1) return toast('议题需要保留方案与监督成员，且至少一名成员。');
+  openModal('移出议题',`${field('要从议题移出的成员',`<select class="input" name="agent_id">${removable.map(id => `<option value="${id}">${esc(name(id))}</option>`).join('')}</select>`)}
+<p class="small muted">移出后该成员不能再在这个议题发言，已发过的消息保留。未派发的唤醒会被撤销，已经在原生应用里执行的不会被打断。</p>${formActions('移出')}`,async form => {
+    await mutate('remove_member',{issue_id:issueId,agent_id:new FormData(form).get('agent_id')}); closeModal(); toast('成员已移出议题。');
   });
 }
 function supplement(issueId) {
@@ -793,7 +805,7 @@ const actions = {
   'new-agent':() => agentForm(), 'edit-agent':el => agentForm(el.dataset.agent),
   'task-detail':el => taskDetail(el.dataset.task), 'edit-task':el => newTask(current().tasks.find(t => t.id === el.dataset.task)),
   'accept-task':el => acceptance(el.dataset.task,true), 'reject-task':el => acceptance(el.dataset.task,false),
-  'invite':el => invite(el.dataset.issue), 'supplement':el => supplement(el.dataset.issue),
+  'invite':el => invite(el.dataset.issue), 'remove-member':el => removeMember(el.dataset.issue), 'supplement':el => supplement(el.dataset.issue),
   'connect':el => connect(el.dataset.agent), 'disconnect':el => connect(el.dataset.agent,true), 'authorize-connect':authorizeConnect, 'pause':pause,
   'open-issue':el => openIssue(el.dataset.issue), 'open-issue-mention':el => openMention(el.dataset.issue), 'open-project-chat':openProjectChat, 'close-chat':() => {ui.chat=false;saveChat();render();},
   'report-generate':async () => {

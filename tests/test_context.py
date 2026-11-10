@@ -18,6 +18,32 @@ from relay.runtime import Runtime
 EVIDENCE = "检查命令通过；" * 200
 
 
+class ReplyRule(unittest.TestCase):
+    """The rules must say, in both forms, that a reply goes back to its thread.
+
+    A native session's assistant output is not forwarded, so a member that only
+    answers in its own app leaves the user without an answer. The digest is what
+    a wake carries most of the time, so the rule cannot live only in the full text.
+    """
+
+    def test_the_full_rules_name_the_thread_to_reply_in(self):
+        text = rules.full("antigravity")
+        self.assertIn("relay_send_message", text)
+        self.assertIn("relay_project_message", text)
+        self.assertIn("同一个议题", text)
+        self.assertIn("原生会话里说的话不算回复", text)
+
+    def test_the_digest_also_requires_a_thread_reply(self):
+        digest = rules.digest("antigravity")
+        self.assertIn("原线程回复", digest)
+        self.assertIn("只确认收到也要回一句", digest)
+        self.assertIn("原生会话里的回答不算回复", digest)
+
+    def test_the_discussion_bound_is_still_stated(self):
+        """Requiring a reply must not read as permission to reply forever."""
+        text = rules.full("antigravity")
+        self.assertIn("被点名不等于可以反复连发", text)
+
 class ContextGrowth(unittest.TestCase):
     def setUp(self):
         root = Path(__file__).resolve().parent.parent / "qa"

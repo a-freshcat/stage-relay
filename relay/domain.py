@@ -344,7 +344,7 @@ class Store:
         # judges when a stage is done, and a summary nobody can ask for is a
         # summary nobody gets. The handler still checks the role and refuses when
         # the supervisor is itself the reporter.
-        user_actions = {"project_create", "workspace_set", "demo_create", "demo_reset", "setup_record", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "invite", "project_close", "record_archive", "record_restore", "project_forget", "project_restore", "report_request"}
+        user_actions = {"project_create", "workspace_set", "demo_create", "demo_reset", "setup_record", "agent_save", "assign", "task_create", "task_edit", "dispatch", "pause", "resolve", "accept", "invite", "remove_member", "project_close", "record_archive", "record_restore", "project_forget", "project_restore", "report_request"}
         if action in user_actions and actor != "user":
             raise Invalid("这项操作由用户决定。")
         if action == "setup_record":
@@ -722,6 +722,26 @@ class Store:
             if member["id"] not in issue["members"]:
                 issue["members"].append(member["id"])
             detail.update(text=f"邀请 {member['name']} 加入议题", recipients=[member["id"]], issue_id=issue["id"])
+        elif action == "remove_member":
+            issue = get(p["issues"], a.get("issue_id"), "议题")
+            if issue.get("archived"):
+                raise Invalid("议题已回收，请先恢复。")
+            member = get(state["agents"], a.get("agent_id"), "成员")
+            if member["id"] not in issue["members"]:
+                raise Invalid("此成员不在该议题中。")
+            # The planner is the supervisor of the thread; removing it would leave
+            # the issue without the role the user assigned.
+            if member["id"] == p["assignments"].get("planner"):
+                raise Invalid("不能移除本项目的方案与监督成员，请先调整分工。")
+            if len(issue["members"]) <= 1:
+                raise Invalid("议题需要至少保留一名成员。")
+            issue["members"] = [m for m in issue["members"] if m != member["id"]]
+            # Messages already written stay: history is what was said to whom at
+            # the time, and rewriting it would misrepresent the record.
+            detail.update(text=f"将 {member['name']} 移出议题", recipients=[member["id"]],
+                          issue_id=issue["id"], removed_member=member["id"])
+            result = issue
+
         elif action == "resolve":
             issue = get(p["issues"], a.get("issue_id"), "议题")
             if issue.get("archived"):
