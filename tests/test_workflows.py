@@ -25,6 +25,22 @@ class Workflows(unittest.TestCase):
     def project(self):
         return self.store.snapshot()["projects"][0]
 
+    @property
+    def runtime(self):
+        from relay.runtime import Runtime
+        return Runtime(self.store)
+
+    def poll_for(self, agent, app="codex"):
+        """Poll the way a native harness does, returning the leased jobs."""
+        session = {"id": "probe-thread", "status": "idle", "workspace": self.temp.name}
+        runtime = self.runtime  # constructs the native_* tables
+        with self.store.connect() as db:
+            db.execute("INSERT OR REPLACE INTO native_bindings VALUES(?,?,?)",
+                       (self.pid, agent, "probe-thread"))
+            db.execute("DELETE FROM native_cursors WHERE project=? AND agent=?",
+                       (self.pid, agent))
+        return runtime.poll(agent, {"app": app, "sessions": [session]})["jobs"]
+
     def task(self, title="数据层", owner="deepseek"):
         return self.act("task_create", title=title, owner=owner, acceptance="检查命令成功且交付依据完整")
 
@@ -342,6 +358,47 @@ class Workflows(unittest.TestCase):
                   if e["detail"].get("report_id") == first["id"]
                   and e["detail"].get("requested_by") is not None]
         self.assertEqual(len(events), 1, events)
+
+    def test_an_addressed_handoff_is_not_held_by_the_discussion_bound(self):
+        """A message that names this member is a handoff, not idle chatter.
+
+        Bounding it made an explicit request wait for an unrelated user reply:
+        four member replies in a row, the fourth naming the other member, stayed
+        deferred until the user spoke again.
+        """
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()
+        for n in range(3):
+            self.act("message", "codex", issue_id=i["id"], body="进度第 %d 条" % n)
+        self.act("message", "deepseek", issue_id=i["id"], body="@codex 请核验这一项")
+        jobs = self.poll_for("codex")
+        # The handoff must ride along with the delivery, not sit in the deferred
+        # queue waiting for the user. It arrives either as its own job or merged
+        # into one that is already being leased.
+        carried = [e for j in jobs for e in (j.get("merged_events") or [])]
+        delivered = "message" in [j["kind"] for j in jobs] or carried
+        self.assertTrue(delivered, "the addressed handoff was never delivered")
+        with self.runtime.store.connect() as db:
+            held = [r[0] for r in db.execute(
+                "SELECT seq FROM native_deferred WHERE agent='codex'")]
+        self.assertEqual(held, [], "the addressed handoff was deferred instead")
+
+    def test_named_members_still_cannot_ping_pong_forever(self):
+        """Naming raises the allowance; it does not remove the bound."""
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()
+        for n in range(10):
+            self.act("message", "deepseek", issue_id=i["id"], body="@codex 第 %d 次" % n)
+            if n < 9:
+                self.act("message", "codex", issue_id=i["id"], body="@deepseek 回 %d" % n)
+        jobs = self.poll_for("codex")
+        self.assertLess(len(jobs), 10, "the bound stopped holding")
+        with self.runtime.store.connect() as db:
+            held = [r[0] for r in db.execute(
+                "SELECT seq FROM native_deferred WHERE agent='codex'")]
+        self.assertNotEqual(held, [], "nothing was bounded at all")
 
     def test_the_panel_button_alone_wakes_the_reporter(self):
         """The wake whitelist must include the request, or the button does nothing.

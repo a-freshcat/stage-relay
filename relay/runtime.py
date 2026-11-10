@@ -541,8 +541,14 @@ class Runtime:
                             db.execute('DELETE FROM native_deferred WHERE project=? AND agent=? AND seq=?',(project,agent,seq))
                             continue
                         # Human messages reset the bounded autonomous discussion allowance.
+                        # A message that names this member is a handoff addressed to it,
+                        # not idle chatter: bounding that would make an explicit request
+                        # wait for an unrelated user reply. The bound still counts named
+                        # messages, so two members cannot name each other forever.
                         latest_user=max((m for m in range(len(issue['messages'])) if issue['messages'][m]['actor']=='user'),default=-1)
-                        if len(issue['messages'])-latest_user-1>=4:
+                        addressed=agent in (detail.get('mentions') or [])
+                        allowance=8 if addressed else 4
+                        if len(issue['messages'])-latest_user-1>=allowance:
                             # Postponed, not skipped, and only for this event: later
                             # events of other issues stay deliverable.
                             db.execute('INSERT OR IGNORE INTO native_deferred VALUES(?,?,?,?,?)',(project,agent,seq,'issue-discussion-bound',time.time()))
@@ -553,7 +559,8 @@ class Runtime:
                         # replies until the user speaks again in the project thread.
                         chat=p.get('chat',[])
                         latest_user=max((n for n in range(len(chat)) if chat[n]['actor']=='user'),default=-1)
-                        if len(chat)-latest_user-1>=4:
+                        named=agent in (detail.get('mentions') or [])
+                        if len(chat)-latest_user-1>=(8 if named else 4):
                             db.execute('INSERT OR IGNORE INTO native_deferred VALUES(?,?,?,?,?)',(project,agent,seq,'chat-discussion-bound',time.time()))
                             advanced=max(advanced,seq)
                             continue
