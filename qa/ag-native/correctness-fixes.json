@@ -1,0 +1,36 @@
+{
+ "commit_fixes": {
+  "delivered_after_send": {
+   "before": "receipt(delivered) 写在 server.send 之前",
+   "after": "send 成功后写 delivered；send 异常写 failed 并抛出，不自动重发"
+  },
+  "step_status_updates": {
+   "before": "reported 是 set，同 index 只报一次，RUNNING->DONE 丢失",
+   "after": "reported 是 dict(index->status)，状态变化即重报；native_activity 同 seq 允许 UPDATE，且已完成状态不被回退覆盖"
+  },
+  "settled_semantics": {
+   "before": "只看尾部 type，无 status；180s 无条件返回，loop 计 delivered",
+   "after": "settled() 要求尾部 type 与 status 同时成立；超时返回 timeout 且不计 delivered；会话保持 busy，不再派发"
+  },
+  "heartbeat": {
+   "before": "loop 单线程同步 run_job，执行期间不 tick",
+   "after": "每会话独立线程；实测最大 tick 间隔 3.0s = TICK"
+  },
+  "port_discovery": {
+   "before": "从 DevToolsActivePort 推导偏移，应用重启即失效（52212 -> 52054 后全错）",
+   "after": "从实际监听端口取候选，locate 用带 CSRF 页面验证；实测正确返回 59571；非 HTTP 端口异常已包装"
+  }
+ },
+ "test_evidence": {
+  "test_antigravity.py": "26 passed（新增 5 条锁住上述语义）",
+  "full": "220 passed, 1 skipped",
+  "ui_probe": "ALL UI CHECKS PASSED",
+  "heartbeat_max_gap": "3.0s"
+ },
+ "live_limit": {
+  "what": "应用实例已重启，当前 language server（59571）的 GetAllCascadeTrajectories 返回空（heartbeat 正常、14 个模型可用）",
+  "meaning": "旧 cascade 属于上一个实例，本实例没有可绑定的既有会话",
+  "consequence": "因此本轮无法在此实例上复现「面板自动派发到既有 cascade」的端到端；不把单测与心跳数据当作端到端证据",
+  "not_done": "未新建 cascade（首轮 400 contents 缺陷未解决，且被明确拒绝）"
+ }
+}

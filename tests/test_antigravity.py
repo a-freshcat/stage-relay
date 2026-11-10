@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from relay.antigravity_worker import run_job
+from relay.antigravity_worker import observe_steps, run_job, settled
 from relay.runtime import Runtime
 from relay.domain import Store, Invalid
 from relay.antigravity import (
@@ -162,18 +162,23 @@ class ActivityMapping(unittest.TestCase):
             def observe(self, *a, **k):
                 pass
 
-        run_job(Server(), Runtime(), "antigravity", "cascade-existing",
-                {"id": "d1", "prompt": "do it"}, "MODEL_X", set())
+        outcome = run_job(Server(), Runtime(), "antigravity", "cascade-existing",
+                          {"id": "d1", "prompt": "do it"}, "MODEL_X", {})
+        self.assertEqual(outcome["outcome"], "settled")
         self.assertEqual(sent["cascade"], "cascade-existing")
         self.assertEqual(sent["text"], "do it")
 
-    def test_a_delivery_without_a_prompt_is_refused(self):
+    def test_a_delivery_without_a_prompt_is_marked_failed_never_delivered(self):
+        """Nothing was sent, so the record must not say it was handed over."""
+        seen = []
+
         class Runtime:
-            def receipt(self, *a, **k):
-                raise AssertionError("must not report delivery for an empty prompt")
+            def receipt(self, agent, payload):
+                seen.append(payload["status"])
 
         with self.assertRaises(Invalid):
-            run_job(object(), Runtime(), "antigravity", "c", {"id": "d"}, "M", set())
+            run_job(object(), Runtime(), "antigravity", "c", {"id": "d"}, "M", {})
+        self.assertEqual(seen, ["failed"])
 
     def test_a_new_antigravity_session_is_refused_rather_than_faked(self):
         """Creation is an open defect; the panel must not claim it works."""
@@ -218,7 +223,8 @@ class ActivityMapping(unittest.TestCase):
 
         class App:
             def steps(self, cascade):
-                return []
+                return [{"type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                         "status": "CORTEX_STEP_STATUS_DONE"}]
 
             def models(self):
                 return [{"model": "M"}]
@@ -239,6 +245,9 @@ class ActivityMapping(unittest.TestCase):
             module.cascades = original
             loop.connect = original_connect
         self.assertEqual(loop.panel.runtime.calls, 1, "exactly one poll per tick")
+        # Delivery now runs on its own thread so the heartbeat keeps beating.
+        for thread in list(loop._threads.values()):
+            thread.join(10)
         self.assertEqual(loop.snapshot()["delivered"], 1)
         self.assertEqual(len(delivered), 1)
 
@@ -256,6 +265,152 @@ class ActivityMapping(unittest.TestCase):
         loop.tick()
         self.assertFalse(loop.snapshot()["online"])
         self.assertEqual(loop.snapshot()["delivered"], 0)
+
+    def test_a_rejected_send_is_failed_and_never_recorded_as_delivered(self):
+        """`delivered` must mean the app accepted it, not that we tried."""
+        seen = []
+
+        class Server:
+            def send(self, *a):
+                raise OSError("transport closed")
+
+        class Runtime:
+            def receipt(self, agent, payload):
+                seen.append(payload["status"])
+
+            def lease(self, *a, **k):
+                raise AssertionError("must not start polling a turn that never began")
+
+            def observe(self, *a, **k):
+                pass
+
+        with self.assertRaises(OSError):
+            run_job(Server(), Runtime(), "antigravity", "c", {"id": "d1", "prompt": "go"}, "M", {})
+        self.assertEqual(seen, ["failed"])
+        self.assertNotIn("delivered", seen)
+
+    def test_a_step_that_finishes_is_reported_again_with_its_completion(self):
+        """RUNNING then DONE is one step becoming finished, not a duplicate."""
+        reported = {}
+
+        class Runtime:
+            def __init__(self):
+                self.events = []
+
+            def observe(self, agent, payload):
+                self.events.append(payload["event"]["data"])
+
+        runtime = Runtime()
+        running = [{"type": "CORTEX_STEP_TYPE_MCP_TOOL", "status": "CORTEX_STEP_STATUS_RUNNING",
+                    "mcpTool": {"toolCall": {"name": "relay_inbox", "argumentsJson": "{}"}}}]
+        observe_steps(runtime, "antigravity", "c", running, reported)
+        finished = [{"type": "CORTEX_STEP_TYPE_MCP_TOOL", "status": "CORTEX_STEP_STATUS_DONE",
+                     "mcpTool": {"toolCall": {"name": "relay_inbox", "argumentsJson": "{}"}}}]
+        observe_steps(runtime, "antigravity", "c", finished, reported)
+        self.assertEqual(len(runtime.events), 2, "completion must be sent")
+        self.assertEqual(runtime.events[0]["status"], "CORTEX_STEP_STATUS_RUNNING")
+        self.assertEqual(runtime.events[1]["status"], "CORTEX_STEP_STATUS_DONE")
+        # Re-sending the same state is still suppressed.
+        observe_steps(runtime, "antigravity", "c", finished, reported)
+        self.assertEqual(len(runtime.events), 2)
+
+    def test_a_turn_whose_tail_is_running_is_not_settled(self):
+        steps = [{"type": "CORTEX_STEP_TYPE_MCP_TOOL", "status": "CORTEX_STEP_STATUS_RUNNING"}]
+        self.assertFalse(settled(steps))
+        steps = [{"type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE", "status": "CORTEX_STEP_STATUS_DONE"}]
+        self.assertTrue(settled(steps))
+
+    def test_a_timeout_is_reported_as_timeout_not_as_completion(self):
+        seen = []
+
+        class Server:
+            def send(self, *a):
+                pass
+
+            def steps(self, cascade):
+                return [{"type": "CORTEX_STEP_TYPE_MCP_TOOL", "status": "CORTEX_STEP_STATUS_RUNNING"}]
+
+        class Runtime:
+            def receipt(self, agent, payload):
+                seen.append(payload["status"])
+
+            def lease(self, *a, **k):
+                return {"renewed": True}
+
+            def observe(self, *a, **k):
+                pass
+
+        import relay.antigravity_worker as module
+        original_poll, original_max = module.POLL_SECONDS, module.MAX_TURN_SECONDS
+        module.POLL_SECONDS, module.MAX_TURN_SECONDS = 0.0, 0.05
+        try:
+            outcome = run_job(Server(), Runtime(), "antigravity", "c", {"id": "d", "prompt": "go"}, "M", {})
+        finally:
+            module.POLL_SECONDS, module.MAX_TURN_SECONDS = original_poll, original_max
+        self.assertEqual(outcome["outcome"], "timeout")
+        self.assertFalse(outcome["settled"])
+        self.assertIn("delivered", seen)   # the app did accept the message
+        self.assertEqual(seen.count("delivered"), 1)
+
+    def test_the_loop_keeps_a_timed_out_session_busy(self):
+        """A live turn must not receive a second delivery."""
+        from relay.antigravity_loop import AntigravityLoop
+
+        class Runtime:
+            def __init__(self):
+                self.polls = 0
+
+            def poll(self, agent, payload):
+                self.polls += 1
+                return {"jobs": [{"id": "d1", "session": "c1", "prompt": "go"}]}
+
+            def receipt(self, *a, **k):
+                pass
+
+            def lease(self, *a, **k):
+                return {"renewed": True}
+
+            def observe(self, *a, **k):
+                pass
+
+        class Panel:
+            def __init__(self):
+                self.runtime = Runtime()
+
+        class App:
+            def steps(self, cascade):
+                return [{"type": "CORTEX_STEP_TYPE_MCP_TOOL", "status": "CORTEX_STEP_STATUS_RUNNING"}]
+
+            def models(self):
+                return [{"model": "M"}]
+
+            def send(self, *a):
+                pass
+
+        loop = AntigravityLoop(Panel(), port=0)
+        import relay.antigravity_loop as module
+        import relay.antigravity_worker as worker
+        original = module.cascades
+        module.cascades = lambda app: [{"id": "c1", "status": "CASCADE_RUN_STATUS_IDLE",
+                                        "workspace": "W"}]
+        loop.connect = lambda: App()
+        original_poll, original_max = worker.POLL_SECONDS, worker.MAX_TURN_SECONDS
+        worker.POLL_SECONDS, worker.MAX_TURN_SECONDS = 0.0, 0.05
+        try:
+            loop.tick()
+            for thread in list(loop._threads.values()):
+                thread.join(10)
+            before = loop.snapshot()["delivered"]
+            # A second tick must not start another delivery for the same session.
+            loop.tick()
+            for thread in list(loop._threads.values()):
+                thread.join(10)
+        finally:
+            module.cascades = original
+            worker.POLL_SECONDS, worker.MAX_TURN_SECONDS = original_poll, original_max
+        self.assertEqual(loop.snapshot()["delivered"], before)
+        self.assertEqual(loop.snapshot()["delivered"], 0)
+        self.assertIn("c1", loop._busy)
 
     def test_an_unknown_step_is_still_reported(self):
         event = activity_of([{"type": "CORTEX_STEP_TYPE_SOMETHING_NEW"}])[0]

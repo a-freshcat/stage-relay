@@ -38,6 +38,7 @@ class AntigravityLoop(threading.Thread):
                       "last_error": None, "last_tick": None, "reason": "尚未启动"}
         self._reported = {}
         self._busy = set()
+        self._threads = {}
 
     def connect(self):
         """Attach to whatever instance is listening; never start one."""
@@ -79,27 +80,50 @@ class AntigravityLoop(threading.Thread):
         if not by_session:
             return
         for cascade_id, job in by_session.items():
-            self.deliver(app, cascade_id, job, hosted)
+            # A turn can run for many minutes. Delivering it inline would stop the
+            # tick from advertising the catalogue, and the host would be reported
+            # offline while it is actively executing — so each session gets its
+            # own worker and the heartbeat keeps beating.
+            self.start_delivery(cascade_id, job)
 
-    def deliver(self, app, cascade_id, job, hosted):
+    def start_delivery(self, cascade_id, job):
         if cascade_id in self._busy:
-            return
-        match = next((c for c in hosted if c["id"] == cascade_id), None)
-        if not match:
-            self.state["reason"] = "绑定的会话不在应用的会话列表中"
+            # Still executing; a second delivery here would land in a live turn.
+            self.state["reason"] = "该会话仍在执行，未重复派发"
             return
         self._busy.add(cascade_id)
+        thread = threading.Thread(target=self._deliver, args=(cascade_id, job),
+                                  daemon=True, name=f"AntigravityDeliver-{cascade_id[:8]}")
+        self._threads[cascade_id] = thread
+        thread.start()
+
+    def _deliver(self, cascade_id, job):
         try:
-            reported = self._reported.setdefault(cascade_id, set())
-            reported.update(range(len(app.steps(cascade_id))))
-            run_job(app, self.panel.runtime, "antigravity", cascade_id, job,
-                    self.model or self._default_model(app), reported)
-            self.state["delivered"] += 1
-            self.state["reason"] = "已交付并在执行"
+            app = self.connect()
+            reported = self._reported.setdefault(cascade_id, {})
+            existing = app.steps(cascade_id)
+            for index, step in enumerate(existing):
+                reported.setdefault(index, step.get("status"))
+            outcome = run_job(app, self.panel.runtime, "antigravity", cascade_id, job,
+                              self.model or self._default_model(app), reported)
+            result = (outcome or {}).get("outcome")
+            if result == "settled":
+                self.state["delivered"] += 1
+                self.state["reason"] = "已交付并执行完成"
+            else:
+                # Not a success: the turn outlived the wait window and may still
+                # be running. Keep the count honest and stay busy.
+                self.state["reason"] = "执行超时，仍在观察，未再派发"
+                self.state["timeouts"] = self.state.get("timeouts", 0) + 1
+                self.state["busy"] = sorted(self._busy)
+                return
         except Exception as error:
             self.state["last_error"] = str(error)
+            self.state["reason"] = "派发失败，未自动重发"
         finally:
-            self._busy.discard(cascade_id)
+            if self.state.get("reason") != "执行超时，仍在观察，未再派发":
+                self._busy.discard(cascade_id)
+                self._threads.pop(cascade_id, None)
 
     def _default_model(self, app):
         """Use the app's own selection; never invent a model globally."""

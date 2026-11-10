@@ -20,6 +20,7 @@ a real turn that produced a `CORTEX_STEP_TYPE_CODE_ACTION` with
   catalogue, never from a constant baked into this package.
 """
 
+import http.client
 import json
 import re
 import ssl
@@ -155,8 +156,12 @@ def read_csrf_token(port, secure=True):
     try:
         with urllib.request.urlopen(f"{scheme}://127.0.0.1:{port}/", timeout=10, context=context) as response:
             page = response.read().decode("utf-8", "replace")
-    except (urllib.error.URLError, OSError) as error:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
+        # A listening port may be gRPC or the host bridge, which replies with
+        # bytes that are not HTTP at all; that is a probe miss, not a failure.
         raise Invalid(f"读不到 Antigravity 页面（端口 {port}）：{error}") from None
+    except ValueError as error:
+        raise Invalid(f"端口 {port} 不是 HTTP 服务：{error}") from None
     match = re.search(r"window\.__APP_CONFIG__\s*=\s*(\{.*?\});", page)
     if not match:
         raise Invalid("Antigravity 页面没有 __APP_CONFIG__，无法取得 token。")
@@ -313,30 +318,33 @@ def locate(running_ports, preferred=None):
             continue
     raise Invalid("没有发现可用的 Antigravity 语言服务器端口。")
 
-def antigravity_ports():
-    """Candidate language-server ports, derived from the app's own published port.
+def antigravity_ports(candidates=None):
+    """Candidate language-server ports, taken from the live app process.
 
-    The app writes its CDP port to `DevToolsActivePort`; the language server and
-    its gRPC sibling sit on the nearby ports the same install opened. Candidates
-    are only tried, never assumed: `locate` accepts one solely when it answers
-    with a CSRF-bearing page, so a wrong guess costs a request, not a connection
-    to something else.
+    Guessing offsets from `DevToolsActivePort` was wrong: the app is relaunched on
+    new ports, so a fixed offset stops matching. What is stable is that the
+    language server owns the listening sockets itself, so the ports it opened are
+    read from the process table; `locate` then accepts one only when it answers
+    with the app's own CSRF-bearing page. A candidate that is gRPC or the host
+    bridge is rejected, not trusted.
     """
-    import os
-    from pathlib import Path
-    home = Path(os.environ.get("APPDATA", "")) / "Antigravity"
-    seeds = []
-    path = home / "DevToolsActivePort"
-    if path.is_file():
-        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            text = line.strip()
-            if text.isdigit():
-                seeds.append(int(text))
-    ordered, seen = [], set()
-    for seed in seeds:
-        for offset in (5, 4, 1, 2, 3, 6, 7):
-            port = seed + offset
-            if port not in seen:
-                seen.add(port)
-                ordered.append(port)
-    return ordered
+    if candidates is not None:
+        return list(candidates)
+    import subprocess
+    script = ("Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | "
+              "Where-Object {$_.LocalAddress -eq '127.0.0.1'} | "
+              "Select-Object -ExpandProperty LocalPort")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                             capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    ports, seen = [], set()
+    for token in out.split():
+        if not token.isdigit():
+            continue
+        port = int(token)
+        if port not in seen:
+            seen.add(port)
+            ports.append(port)
+    return ports

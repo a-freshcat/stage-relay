@@ -850,5 +850,21 @@ class Runtime:
             event=payload.get('event',{})
             if event.get('type') not in {'request/header','session/config','tool/call','tool/result','mcp/call','assistant/message','user/message','turn/start','turn/end','error','step'}:
                 raise Invalid('不支持的原生活动。')
-            db.execute('INSERT OR IGNORE INTO native_activity VALUES(?,?,?,?)',(agent,session,int(payload['seq']),json.dumps(dict(type=event['type'],data=event.get('data',{}),created=now()),ensure_ascii=False)))
+            # A step is addressed by its index, but its status moves: RUNNING then
+            # DONE is the same step finishing, not a new one. Ignoring the second
+            # report would keep a completed tool looking unfinished, so the row is
+            # replaced — the newer status is strictly more informative.
+            body=json.dumps(dict(type=event['type'],data=event.get('data',{}),created=now()),ensure_ascii=False)
+            existing=db.execute('SELECT body FROM native_activity WHERE agent=? AND session=? AND seq=?',(agent,session,int(payload['seq']))).fetchone()
+            if existing:
+                try:
+                    prior=json.loads(existing[0])
+                except ValueError:
+                    prior={}
+                if prior.get('data',{}).get('status')=='CORTEX_STEP_STATUS_DONE' and json.loads(body).get('data',{}).get('status')!='CORTEX_STEP_STATUS_DONE':
+                    # Never let a stale view downgrade a known completion.
+                    return {'saved':False,'reason':'已完成状态不被回退'}
+                db.execute('UPDATE native_activity SET body=? WHERE agent=? AND session=? AND seq=?',(body,agent,session,int(payload['seq'])))
+            else:
+                db.execute('INSERT INTO native_activity VALUES(?,?,?,?)',(agent,session,int(payload['seq']),body))
         return {'saved':True}
