@@ -81,6 +81,31 @@ class PanelServer(ThreadingHTTPServer):
         self.bridge_refresh = self.repoint_bridges()
         self.register_scratch()
         threading.Thread(target=self.codex.restore,daemon=True,name='RestoreNativeCodex').start()
+        # Antigravity has no plugin of its own: the panel keeps the language
+        # server advertised and delivers leased work itself. Started here so the
+        # feature exists outside tests, and pointed at the language-server port
+        # discovered from the app's own DevToolsActivePort file.
+        self.antigravity_loop = None
+        # A test or a scripted host must never attach to the user's live app, and
+        # `connection_home` is exactly the marker that this panel is not the real
+        # one. Only the installed panel connects.
+        if connection_home is None:
+            threading.Thread(target=self._start_antigravity, daemon=True, name='StartAntigravity').start()
+
+    def _start_antigravity(self):
+        try:
+            from .antigravity import antigravity_ports, locate
+            from .antigravity_loop import AntigravityLoop
+            port = locate(antigravity_ports())
+            if not port:
+                self.antigravity_loop = AntigravityLoop(self, 0)
+                self.antigravity_loop.state['reason'] = '未发现运行中的 Antigravity 语言服务器'
+                return
+            self.antigravity_loop = AntigravityLoop(self, port)
+            self.antigravity_loop.start()
+        except Exception as error:
+            self.antigravity_loop = None
+            self.antigravity_error = str(error)
 
     def repoint_bridges(self):
         """Make already-authorized members load this package's bridge.
@@ -251,6 +276,8 @@ class Handler(BaseHTTPRequestHandler):
                     "pid": os.getpid(),
                     "data_dir": str(self.server.store.path.parent),
                     "bridge_refresh": getattr(self.server, "bridge_refresh", []),
+                    "antigravity": (self.server.antigravity_loop.snapshot()
+                                    if getattr(self.server, "antigravity_loop", None) else None),
                 })
                 return
             if path.startswith("/api/"):
@@ -399,6 +426,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(self.server.runtime.model_command(body.get('project_id'),body.get('agent_id'),body.get('operation'),body.get('selection')))
             elif path == '/api/runtime/create':
                 self.json(self.server.runtime.create_session(body.get('project_id'),body.get('agent_id'),replace=body.get('replace') is True))
+            elif path == '/api/native/antigravity/sessions':
+                # Discovery is read-only: it asks the app what it already has and
+                # never creates a session, because creating one is unsupported.
+                loop=self.server.antigravity_loop
+                if not loop:
+                    raise Invalid('未发现运行中的 Antigravity 语言服务器。')
+                app=loop.connect()
+                from .antigravity import cascades
+                found=cascades(app)
+                project=next((p for p in self.server.store.snapshot()['projects'] if p['id']==body.get('project_id')),None)
+                if project:
+                    mine=Path(project['workspace']).resolve()
+                    for c in found:
+                        c['same_workspace']=bool(c.get('workspace')) and Path(c['workspace']).resolve()==mine
+                self.json({'members':[a for a in self.server.store.snapshot()['agents'] if a['app']=='antigravity'],
+                           'sessions':found, 'loop':loop.snapshot()})
             elif path == '/api/runtime/bind':
                 self.json(self.server.runtime.bind(body.get('project_id'),body.get('agent_id'),body.get('session_id')))
             elif path == "/api/application/open":

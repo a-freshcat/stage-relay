@@ -1,0 +1,21 @@
+{
+ "loop_delivery": [
+  {
+   "id": "delivery_d9105652601f",
+   "session": "650c185b-2fa3-4211-9977-655df638b1e8",
+   "status": "queued",
+   "event": 576
+  },
+  {
+   "id": "delivery_3d3974336a04",
+   "session": "650c185b-2fa3-4211-9977-655df638b1e8",
+   "status": "delivered",
+   "event": 575
+  }
+ ],
+ "artifact": "qa/ag-native/workspace/loop-proof-5.txt",
+ "content": "auto5",
+ "started_from": "PanelServer -> AntigravityLoop (常驻, 3s tick)",
+ "discovery": "GetAllCascadeTrajectories -> /api/native/antigravity/sessions",
+ "no_manual_call": "run_job 不再由脚本直接调用，由 loop.tick 派发"
+}

@@ -66,6 +66,7 @@ def run_job(server, runtime, agent_id, cascade, job, plan_model, reported):
     quiet_since = time.time()
     steps = []
     while time.time() < deadline:
+        runtime.lease(job["id"])
         time.sleep(POLL_SECONDS)
         steps = server.steps(cascade)
         reported = observe_steps(runtime, agent_id, cascade, steps, reported)

@@ -269,6 +269,34 @@ def finished(steps):
     return False
 
 
+def cascades(server):
+    """The app's own cascade list, shaped for session discovery.
+
+    `GetAllCascadeTrajectories` is the only listing the language server exposes.
+    A cascade advertises the workspace folders it was opened on, which is what
+    the binding check compares, so an entry without one cannot be bound.
+    """
+    summaries = (server.call("GetAllCascadeTrajectories", {}) or {}).get("trajectorySummaries") or {}
+    found = []
+    for cascade_id, summary in summaries.items():
+        folders = []
+        for workspace in summary.get("workspaces") or []:
+            uri = workspace.get("workspaceFolderAbsoluteUri") or ""
+            if uri.startswith("file:///"):
+                folders.append(uri[len("file:///"):].replace("/", "\\"))
+        found.append({
+            "id": cascade_id,
+            "status": summary.get("status"),
+            "title": (summary.get("annotations") or {}).get("title") or summary.get("summary") or "",
+            "steps": summary.get("stepCount") or 0,
+            "modified": summary.get("lastModifiedTime"),
+            "workspace": folders[0] if folders else None,
+            "workspaces": folders,
+            "app": "antigravity",
+        })
+    return found
+
+
 def locate(running_ports, preferred=None):
     """Pick the language server an instance actually exposed.
 
@@ -279,8 +307,36 @@ def locate(running_ports, preferred=None):
         if preferred and int(port) != int(preferred):
             continue
         try:
-            if read_csrf_token(port):
+            if read_csrf_token(port, secure=False):
                 return int(port)
         except Invalid:
             continue
     raise Invalid("没有发现可用的 Antigravity 语言服务器端口。")
+
+def antigravity_ports():
+    """Candidate language-server ports, derived from the app's own published port.
+
+    The app writes its CDP port to `DevToolsActivePort`; the language server and
+    its gRPC sibling sit on the nearby ports the same install opened. Candidates
+    are only tried, never assumed: `locate` accepts one solely when it answers
+    with a CSRF-bearing page, so a wrong guess costs a request, not a connection
+    to something else.
+    """
+    import os
+    from pathlib import Path
+    home = Path(os.environ.get("APPDATA", "")) / "Antigravity"
+    seeds = []
+    path = home / "DevToolsActivePort"
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            text = line.strip()
+            if text.isdigit():
+                seeds.append(int(text))
+    ordered, seen = [], set()
+    for seed in seeds:
+        for offset in (5, 4, 1, 2, 3, 6, 7):
+            port = seed + offset
+            if port not in seen:
+                seen.add(port)
+                ordered.append(port)
+    return ordered

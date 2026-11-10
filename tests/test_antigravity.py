@@ -156,6 +156,9 @@ class ActivityMapping(unittest.TestCase):
             def receipt(self, *a, **k):
                 pass
 
+            def lease(self, *a, **k):
+                pass
+
             def observe(self, *a, **k):
                 pass
 
@@ -180,6 +183,79 @@ class ActivityMapping(unittest.TestCase):
         with self.assertRaises(Invalid) as caught:
             runtime.create_session(project["id"], "antigravity")
         self.assertIn("不支持新建会话", str(caught.exception))
+
+    def test_the_loop_takes_each_lease_once_and_delivers_it(self):
+        """A lease taken by advertise() must be delivered, never dropped.
+
+        The earlier draft polled once per cascade: the first poll leased the job,
+        the cascade lookup then failed, and the job was stranded in `leased`
+        where no later tick could reclaim it.
+        """
+        from relay.antigravity_loop import AntigravityLoop
+
+        delivered = []
+
+        class Runtime:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self, agent, payload):
+                self.calls += 1
+                return {"jobs": [{"id": "d1", "session": "c1", "prompt": "go"}]}
+
+            def observe(self, *a, **k):
+                pass
+
+            def lease(self, *a, **k):
+                return {"renewed": True}
+
+            def receipt(self, *a, **k):
+                pass
+
+        class Panel:
+            def __init__(self):
+                self.runtime = Runtime()
+
+        class App:
+            def steps(self, cascade):
+                return []
+
+            def models(self):
+                return [{"model": "M"}]
+
+            def send(self, *a):
+                delivered.append(a)
+
+        loop = AntigravityLoop(Panel(), port=0)
+        import relay.antigravity_loop as module
+        original = module.cascades
+        module.cascades = lambda app: [{"id": "c1", "status": "CASCADE_RUN_STATUS_IDLE",
+                                        "workspace": "W"}]
+        original_connect = loop.connect
+        loop.connect = lambda: App()
+        try:
+            loop.tick()
+        finally:
+            module.cascades = original
+            loop.connect = original_connect
+        self.assertEqual(loop.panel.runtime.calls, 1, "exactly one poll per tick")
+        self.assertEqual(loop.snapshot()["delivered"], 1)
+        self.assertEqual(len(delivered), 1)
+
+    def test_the_loop_reports_offline_instead_of_inventing_a_delivery(self):
+        from relay.antigravity_loop import AntigravityLoop
+
+        class Panel:
+            class runtime:
+                @staticmethod
+                def poll(*a, **k):
+                    raise AssertionError("must not lease while the app is offline")
+
+        loop = AntigravityLoop(Panel(), port=0)
+        loop.connect = lambda: (_ for _ in ()).throw(OSError("no app"))
+        loop.tick()
+        self.assertFalse(loop.snapshot()["online"])
+        self.assertEqual(loop.snapshot()["delivered"], 0)
 
     def test_an_unknown_step_is_still_reported(self):
         event = activity_of([{"type": "CORTEX_STEP_TYPE_SOMETHING_NEW"}])[0]

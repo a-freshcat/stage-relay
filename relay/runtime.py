@@ -6,6 +6,11 @@ from . import brief, rules
 from .domain import Invalid, now, uid
 
 
+# A lease must outlast a turn that runs a real tool; renewing it is the
+# delivery side's job, this is only the window before a crash is assumed.
+LEASE_SECONDS = 900
+
+
 class Runtime:
     def __init__(self, store):
         self.store = store
@@ -380,6 +385,20 @@ class Runtime:
                 migrated += 1
         return migrated
 
+    def lease(self, job_id):
+        """Renew a lease while the delivery side is still executing it.
+
+        A turn that runs a tool can take minutes; without a renewal the poll loop
+        would decide the attempt was lost and refuse to deliver the next event.
+        """
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute("SELECT status FROM native_jobs WHERE id=?",(job_id,)).fetchone()
+            if not row or row[0]!='leased':
+                return {'renewed':False,'status':row[0] if row else None}
+            db.execute('UPDATE native_jobs SET updated=? WHERE id=?',(time.time(),job_id))
+        return {'renewed':True,'status':'leased'}
+
     def reconcile(self):
         """Re-check registrations after a crash instead of guessing by name.
 
@@ -625,7 +644,11 @@ class Runtime:
                 if advanced!=cursor:
                     db.execute('INSERT INTO native_cursors VALUES(?,?,?) ON CONFLICT(project,agent) DO UPDATE SET seq=excluded.seq',(project,agent,advanced))
             # Never replay an expired lease: a crash may have happened after native enqueue.
-            db.execute("UPDATE native_jobs SET status='uncertain' WHERE agent=? AND status='leased' AND updated<?",(agent,time.time()-30))
+            # The window has to outlast one real turn. A turn that ran a tool took
+            # minutes here, and marking it uncertain mid-flight lost the result and
+            # blocked the next delivery on UNIQUE(event,agent). A caller that is
+            # still executing therefore renews its lease instead of racing a timer.
+            db.execute("UPDATE native_jobs SET status='uncertain' WHERE agent=? AND status='leased' AND updated<?",(agent,time.time()-LEASE_SECONDS))
             pending=[]
             loaded={s['id'] for s in sessions}
             busy={s['id'] for s in sessions if s.get('status')=='running'}
