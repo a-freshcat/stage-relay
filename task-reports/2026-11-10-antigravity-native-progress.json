@@ -15,7 +15,7 @@
   "GetCascadeTrajectorySteps": "200"
  },
  "solved_this_round": "工作区 URI 必须是 file://；原先 C:/... 报 unknown uri scheme",
- "blocked": "failed to construct executor: plan model not specified；它由 getCascadeConfigForTrajectory 读取会话级配置，不读请求里的 planModel / requestedModel / cascadeConfig.{planModel,requestedModel,model}（全部实测被忽略）",
+ "blocked": "failed to construct executor: plan model not specified（executor 构造阶段）",
  "workspace": "qa/ag-native/workspace (file:// URI)",
  "cascades_created": [
   "10b9bee9-05e5-47a8-9006-7df61a3dcd18",
@@ -28,5 +28,28 @@
   "2d77571f-453a-4173-926f-33bdc718a1f2"
  ],
  "no_user_session_touched": "全部 cascade 都建在项目工作区 qa/ag-native/workspace；未向任何已有用户会话注入消息",
- "tool_execution": "未发生；没有产物文件，因此不能声称原生工具执行成功"
+ "tool_execution": "未发生；没有产物文件，因此不能声称原生工具执行成功",
+ "unproven_inference": {
+  "claim": "模型来自会话级/全局设置，不在请求中",
+  "status": "待证实推断 —— 不是结论",
+  "what_it_rests_on": "顶层 planModel/requestedModel 与 cascadeConfig.{planModel,requestedModel,model} 被静默忽略；trajectory_metadata_blob 未出现模型字段",
+  "why_insufficient": "这只排除了已试形状，不能排除其他嵌套请求字段或初始化配置路径",
+  "rule": "不得据此结论继续盲猜字段；须由真实 App 请求或原生设置对照取得",
+  "new_shapes_tried": [
+   "cascadeConfig(base64 bytes)",
+   "modelEnum(plain/base64)"
+  ]
+ },
+ "next": "真实应用 UI 正常发送一次，取最小脱敏请求/原生设置差异；优先复用已建测试 cascade，不注入用户会话、不改全局默认模型、不自动批准权限、不改会话数据库",
+ "round_2_attempts": {
+  "ui_path": "真实应用以 headless 运行，无窗口；应用前端页面 http://127.0.0.1:52212/ 在普通浏览器中只渲染空白（需要 Electron 渲染上下文），UI 对照暂不可用",
+  "cascadeConfig_as_bytes": "cascade_config 是 bytes 字段（序列化嵌套消息），传 JSON 对象会被静默丢弃；改传 base64 后仍报同一错误",
+  "model_enum_field": "发现 model_enum（bytes,4）紧邻 cascade_id，试 plain string 与 base64 JSON 两种形状，均未生效",
+  "InitializeCascadePanelState": "501 unimplemented",
+  "GetUserSettings": "501 unimplemented",
+  "global_setting_found": "~/.gemini/antigravity/antigravity_state.pbtxt 有 last_selected_agent_model: MODEL_PLACEHOLDER_M318（用户全局默认，未修改）",
+  "still": "failed to construct executor: plan model not specified"
+ },
+ "stopped_blind_guessing": true,
+ "specific_blocker": "无法定位 StartCascade/SendUserCascadeMessage 中真正被 executor 读取的模型字段；已排除多种形状，且该字段不落盘到 cascade DB，也不来自全局设置（全局 M318 未生效）"
 }
