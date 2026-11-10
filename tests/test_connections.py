@@ -17,9 +17,9 @@ ROOT = Path(__file__).resolve().parent.parent
 class ConnectionSetup(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="test-state-", dir=ROOT / "qa")
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         assert self.root.is_relative_to((ROOT / "qa").resolve())
-        self.addCleanup(self.temp.cleanup)
         self.home = self.root / "fake-home"
         self.home.mkdir()
         self.connections = Connections(self.root / "data",4318,home=self.home)
@@ -198,6 +198,27 @@ class ConnectionSetup(unittest.TestCase):
         finally:
             mod.atomic_replace=original_replace
         self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["mcpServers"],{"someone":"else"})
+
+    def test_ownership_written_by_another_process_is_seen_without_restart(self):
+        """A running panel must not treat a legitimate adoption as a stranger's.
+
+        The journal is the shared record. Holding the first reading in memory made
+        a one-shot adoption look like a conflicting third-party edit, and the user
+        saw a conflict prompt that no retry could clear.
+        """
+        import json
+        target = self.home / ".gemini/config/mcp_config.json"
+        self.write(target, json.dumps({"mcpServers": {}}))
+        # Another process adopts the entry through the same manager code.
+        other = Connections(self.root / "data", 4318, home=self.home)
+        plan = other.prepare(self.anti)
+        other.commit(plan["plan_id"], True)
+        # This manager was created before that adoption and has its old view.
+        self.connections.owned = {}
+        plan = self.connections.prepare(self.anti)
+        self.connections.commit(plan["plan_id"], True)
+        after = json.loads(target.read_text(encoding="utf-8"))["mcpServers"]
+        self.assertEqual(after["stage-relay-antigravity"], self.connections.entry(self.anti))
 
     def test_malformed_config_is_not_changed(self):
         target=self.home / ".gemini/config/mcp_config.json"

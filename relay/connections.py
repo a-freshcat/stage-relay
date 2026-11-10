@@ -37,8 +37,25 @@ class Connections:
         self.plans = {}
         self.owned = {}
         self.journal = self.data_dir / "connection-ownership.json"
-        if self.journal.exists():
-            self.owned = json.loads(self.journal.read_text(encoding="utf-8"))
+        self.reload_owned()
+
+    def reload_owned(self):
+        """Take the journal on disk as the record of what this panel wrote.
+
+        A running panel can outlive a change made by another process — a one-shot
+        adoption, or a newer panel on the same store. Holding the first reading in
+        memory makes a legitimately adopted entry look like a stranger's, and the
+        panel then refuses with a conflict message the user cannot resolve. The
+        journal is the shared record, so it is re-read whenever ownership is
+        consulted, not cached for the life of the process.
+        """
+        try:
+            self.owned = (json.loads(self.journal.read_text(encoding="utf-8"))
+                          if self.journal.exists() else {})
+        except (OSError, ValueError):
+            # A journal that cannot be read is not evidence of ownership; keep
+            # what is known rather than treating every entry as ours.
+            return self.owned
 
     def current_entry(self, agent):
         """The bridge this running package ships, for this agent and store."""
@@ -192,6 +209,9 @@ class Connections:
         return updated.encode("utf-8")
 
     def prepare(self, agent, remove=False, adopt=None):
+        # Ownership is a shared on-disk record; re-read it before deciding that an
+        # entry is somebody else's.
+        self.reload_owned()
         target, kind = self.target(agent)
         # Refuse symlink redirection before accepting any configuration write.
         if target.is_symlink() or target.parent.resolve() != target.parent.absolute():
