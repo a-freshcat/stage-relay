@@ -4,7 +4,14 @@
 
 **本项目 workspace 内总量 716.3 MB / 8,081 文件，无法解释用户报告的约 10 GB 增长。** 按你的要求，我不提前归因。
 
-统计口径：`Get-ChildItem -Recurse -File -Force` 的文件逻辑长度之和，不含 `.git`（`.git` 另计 2.6 MB，已含在下面的 .git 行）。未追随重解析目录；未打印任何凭据或用户内容。
+统计口径：`Get-ChildItem -Recurse -File -Force` 的文件**逻辑长度**（不占簇对齐后的物理空间）之和。
+两份合计并列，避免歧义：
+
+```
+含 .git : 754,030,521 bytes = 719.1 MiB / 8,219 文件
+.git    :   2,772,739 bytes =   2.6 MiB /   136 文件
+不含 .git: 751,257,782 bytes = 716.5 MiB / 8,083 文件
+```未追随重解析目录；未打印任何凭据或用户内容。
 
 ## workspace 一级目录
 
@@ -28,7 +35,7 @@ __pycache__          4        0.0 MB    11-09 01:32
 根目录文件           9        0.0 MB            -
 ```
 
-## 最大项：release/ 与 build/（各 7 个构建，共 602.4 MB）
+## 最大项：release/（8 个目录）与 build/（5 个目录），合计 602.5 MiB
 
 ```
 release/StageRelay-0.3.1-codex-dsh       463f  154.9MB  created 11-08 20:21  newest 11-10 20:00  ← 共享实例正在用的数据目录
@@ -71,7 +78,7 @@ chat-ui                   5f   0.4MB
 release-011-data         51f   0.2MB
 release-014-data          9f   0.1MB
 test-state-*            117 个目录，合计 0.0 MB（空目录，测试运行残留）
-mention-bound-*           0 个（我已清理过）
+mention-bound-*           0 个 —— 详见下一节「我删除过什么」
 ```
 
 ## 无法确定的部分（如实说明）
