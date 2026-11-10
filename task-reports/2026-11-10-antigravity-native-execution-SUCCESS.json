@@ -1,0 +1,90 @@
+{
+ "breakthrough": "Antigravity 原生工具真实执行成功：planner → write_file → 产物落盘",
+ "cascadeId": "650c185b-2fa3-4211-9977-655df638b1e8",
+ "workspace": "qa/ag-native/workspace",
+ "request_shape": {
+  "StartCascade": {
+   "source": "CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT",
+   "workspaceUris": [
+    "file:///...（必须是 file:// 方案）"
+   ],
+   "cascadeConfig": {
+    "plannerConfig": {
+     "planModel": "MODEL_PLACEHOLDER_M318"
+    }
+   }
+  },
+  "SendUserCascadeMessage": {
+   "cascadeId": "<id>",
+   "cascadeConfig": {
+    "plannerConfig": {
+     "planModel": "MODEL_PLACEHOLDER_M318"
+    }
+   },
+   "text": "<指令>"
+  }
+ },
+ "key_findings": {
+  "workspace_uri": "必须 file://，C:/... 会报 unknown uri scheme",
+  "plan_model_location": "cascadeConfig.plannerConfig.planModel，取值是 Model 枚举名（如 MODEL_PLACEHOLDER_M318）",
+  "evidence_source": "从真实渲染层 main.js（11.7MB）读到的构造代码：Wb(I.CascadeConfigSchema,{plannerConfig:Wb(I.CascadePlannerConfigSchema,{... planModel: q.choice?.case===\"model\"?q.choice.value:void 0 ...})})",
+  "dispatched_path": "d?.plannerConfig?.planModel -> E.Model[f]",
+  "text_field": "顶层 text 生效；之前 400 contents is not specified 是因为缺少 cascadeConfig.plannerConfig"
+ },
+ "artifact": {
+  "path": "qa/ag-native/workspace/stage-relay-probe.txt",
+  "bytes": 22,
+  "content": "antigravity native ok"
+ },
+ "steps": [
+  {
+   "type": "CORTEX_STEP_TYPE_ERROR_MESSAGE",
+   "status": "CORTEX_STEP_STATUS_DONE",
+   "toolCall": null,
+   "error": "INVALID_ARGUMENT (code 400): * GenerateContentRequest.contents: contents is not specified\n"
+  },
+  {
+   "type": "CORTEX_STEP_TYPE_USER_INPUT",
+   "status": "CORTEX_STEP_STATUS_DONE",
+   "toolCall": null,
+   "error": null
+  },
+  {
+   "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+   "status": "CORTEX_STEP_STATUS_DONE",
+   "toolCall": null,
+   "error": null
+  },
+  {
+   "type": "CORTEX_STEP_TYPE_CODE_ACTION",
+   "status": "CORTEX_STEP_STATUS_DONE",
+   "toolCall": {
+    "name": "write_file",
+    "argumentsJson": "{\"Content\":\"antigravity native ok\\n\",\"Overwrite\":true,\"Path\":\"C:\\\\Users\\\\handsomeboys\\\\Documents\\\\ChatGPT\\\\new_subagent\\\\qa\\\\ag-native\\\\workspace\\\\stage-relay-probe.txt\"}"
+   },
+   "error": null
+  },
+  {
+   "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+   "status": "CORTEX_STEP_STATUS_DONE",
+   "toolCall": null,
+   "error": null
+  },
+  {
+   "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+   "status": "CORTEX_STEP_STATUS_DONE",
+   "toolCall": null,
+   "error": null
+  },
+  {
+   "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+   "status": "CORTEX_STEP_STATUS_DONE",
+   "toolCall": null,
+   "error": null
+  }
+ ],
+ "still_not_verified": [
+  "MCP 协作回传（Antigravity 调用所属 stage-relay MCP）",
+  "Runtime 接入与 Codex 独立读回"
+ ]
+}
