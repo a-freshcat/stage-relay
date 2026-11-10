@@ -1,0 +1,32 @@
+{
+ "what": "真实 Antigravity（2.30.0）原生通道进展与边界，脱敏",
+ "launch_fix": "清除 ELECTRON_RUN_AS_NODE 后真实应用可启动；headless 下 Antigravity×4 + language_server 存活",
+ "real_ls": {
+  "http_port": 52212,
+  "app_data_dir": "antigravity(真实登录态)",
+  "app_version": "2.30.0"
+ },
+ "verified": {
+  "Heartbeat": "200",
+  "GetAllCascadeTrajectories": "200 {}",
+  "GetCascadeModelConfigData": "200，13 个模型，例 Gemini 4 Argon (Medium) -> MODEL_PLACEHOLDER_M418",
+  "StartCascade": "200，需要 workspaceUris 为 file:// 方案",
+  "SendUserCascadeMessage": "200，写入 USER_INPUT 步",
+  "GetCascadeTrajectorySteps": "200"
+ },
+ "solved_this_round": "工作区 URI 必须是 file://；原先 C:/... 报 unknown uri scheme",
+ "blocked": "failed to construct executor: plan model not specified；它由 getCascadeConfigForTrajectory 读取会话级配置，不读请求里的 planModel / requestedModel / cascadeConfig.{planModel,requestedModel,model}（全部实测被忽略）",
+ "workspace": "qa/ag-native/workspace (file:// URI)",
+ "cascades_created": [
+  "10b9bee9-05e5-47a8-9006-7df61a3dcd18",
+  "5ee02b25-f4df-46d0-a1da-d6c99261ac51",
+  "8e94305e-6df0-45ea-86b7-0f3bea6b1f48",
+  "ee1064bd-3c81-4435-8a81-da54b4ba19f5",
+  "fd03167b-618d-418e-9165-861fccdf5cef",
+  "30f170e9-0220-4aa9-abf6-2081547f8f9e",
+  "39ff0d58-c201-49eb-a2fb-2b619dceebc8",
+  "2d77571f-453a-4173-926f-33bdc718a1f2"
+ ],
+ "no_user_session_touched": "全部 cascade 都建在项目工作区 qa/ag-native/workspace；未向任何已有用户会话注入消息",
+ "tool_execution": "未发生；没有产物文件，因此不能声称原生工具执行成功"
+}
