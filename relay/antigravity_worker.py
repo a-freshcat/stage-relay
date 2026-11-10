@@ -27,7 +27,7 @@ Nothing here decides what a task means. It reports the app's own steps and lets
 
 import time
 
-from .antigravity import activity_of
+from .antigravity import OutcomeUnknown, activity_of
 from .domain import Invalid
 
 # How often to ask the app for new steps while a turn is running.
@@ -99,8 +99,13 @@ def settled(steps):
     return False
 
 
-def run_job(server, runtime, agent_id, cascade, job, plan_model, reported, guard=None):
+def run_job(server, runtime, agent_id, cascade, job, plan_model, reported, guard=None,
+            steps_before=None):
     """Deliver one leased job to the app and report what it produced.
+
+    `steps_before` is the step count seen just before sending. Until a step
+    appears beyond it, the trajectory still shows the previous turn, and treating
+    that tail as this turn's result would report success for work not yet done.
 
     Returns a dict describing the outcome, so the caller never has to infer
     success from the absence of an exception.
@@ -122,19 +127,34 @@ def run_job(server, runtime, agent_id, cascade, job, plan_model, reported, guard
             raise Invalid(problem)
     try:
         server.send(cascade, prompt, plan_model)
+    except OutcomeUnknown as error:
+        # The bytes may have reached the app. Saying "failed" would assert
+        # something we cannot know, so the job is left uncertain and never
+        # retried here.
+        runtime.receipt(agent_id, {"id": job["id"], "status": "uncertain",
+                                   "detail": f"发送结果未知：{error}"})
+        raise
     except Exception as error:
-        # A refusal is provably "not sent"; a timeout or a dropped connection is
-        # not. Claiming `failed` for the second case would assert something we
-        # cannot know, so it becomes `uncertain` and is never retried here.
-        definite = isinstance(error, (Invalid, ValueError, KeyError))
-        status = "failed" if definite else "uncertain"
-        runtime.receipt(agent_id, {"id": job["id"], "status": status,
-                                   "detail": f"发送异常（{type(error).__name__}）：{error}"})
+        # A refusal, an invalid argument, or a local precondition: the app did not
+        # take the message.
+        runtime.receipt(agent_id, {"id": job["id"], "status": "failed",
+                                   "detail": f"发送未成功：{error}"})
         raise
     # Accepted by the app; from here the turn may run.
     runtime.receipt(agent_id, {"id": job["id"], "status": "delivered",
                                "detail": "Antigravity 已接受消息"})
 
+    # The tail may still be the previous turn's message. A turn is only this
+    # one's once a step appears that the earlier baseline did not have, so the
+    # caller counts nothing as "finished" until then.
+    # Accept either the step list or its count: the count is all that is needed,
+    # and a caller that already has the list should not have to re-count it.
+    if steps_before is None:
+        step_baseline = None
+    elif isinstance(steps_before, int):
+        step_baseline = steps_before
+    else:
+        step_baseline = len(steps_before)
     deadline = time.time() + MAX_TURN_SECONDS
     steps = []
     quiet_since = time.time()
@@ -142,8 +162,17 @@ def run_job(server, runtime, agent_id, cascade, job, plan_model, reported, guard
     while time.time() < deadline:
         runtime.lease(job["id"])
         time.sleep(POLL_SECONDS)
-        steps = server.steps(cascade)
+        try:
+            steps = server.steps(cascade)
+        except OutcomeUnknown:
+            # Accepted already, so a lost reply means this turn's state is
+            # unknown, not that it ended.
+            return {"outcome": "unknown", "steps": len(steps), "settled": False}
         reported = observe_steps(runtime, agent_id, cascade, steps, reported)
+        if step_baseline is not None and len(steps) <= step_baseline:
+            # No new step yet: whatever the tail says belongs to the old turn.
+            quiet_since = time.time()
+            continue
         signature = (len(steps), steps[-1].get("status") if steps else None)
         if signature != last_signature:
             last_signature = signature

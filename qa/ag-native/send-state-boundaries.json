@@ -1,0 +1,32 @@
+{
+ "fixes": {
+  "exception_types_through_client": {
+   "problem": "AntigravityServer.call 把 URLError/OSError 统一包装 Invalid，worker 把所有 Invalid 当未发送；真实超时被记 failed",
+   "fix": "新增 NotSent(Invalid) 与 OutcomeUnknown(Invalid)；HTTPError→NotSent，URLError/OSError→OutcomeUnknown；worker 按类型分别写 failed / uncertain",
+   "test": "patch urlopen 抛 URLError(TimeoutError) 驱动真实 AntigravityServer.send→run_job，断言 receipt=uncertain；HTTPError 400 断言 receipt=failed"
+  },
+  "observation_failure_after_acceptance": {
+   "problem": "已 send 接受后 steps/observe 异常，_deliver 的 except 把 settled_outcome 置 True 释放 busy，等于断言 nothing running",
+   "fix": "引入 accepted 标志；接受后的任何异常不释放 busy，记 unknown 计数与「派发失败，未自动重发」；只有可证明未发送才释放"
+  },
+  "old_tail_as_new_turn": {
+   "problem": "首次轮询若只读到发送前旧 DONE 尾部，会被当成新 turn 已完成",
+   "fix": "run_job 接受 steps_before 基线；len(steps) <= baseline 时一律视为旧回合、继续等待，不判 settled",
+   "test": "steps 恒为 1、baseline=1 → outcome=timeout 且 settled=False"
+  },
+  "steps_before_type": {
+   "note": "接受 list 或 int，避免调用方与内部重复计数"
+  }
+ },
+ "tests": {
+  "test_antigravity.py": "35 passed（本轮新增 3 条：真实 client 超时、真实 HTTP 拒绝、旧尾部不算完成）",
+  "full": "229 passed, 1 skipped",
+  "ui_probe": "ALL UI CHECKS PASSED"
+ },
+ "not_done": [
+  "未新建 QA 项目/目录",
+  "未重复旧端到端",
+  "未重启共享应用",
+  "目标实例仍零会话，等用户侧准备一次 QA 会话"
+ ]
+}

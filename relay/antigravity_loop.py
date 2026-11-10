@@ -137,18 +137,21 @@ class AntigravityLoop(threading.Thread):
 
     def _deliver(self, job):
         cascade_id = job["session"]
-        settled_outcome = False
+        release = False
+        accepted = False
         try:
             app = self.connect()
             reported = self._reported.setdefault(cascade_id, {})
-            for index, step in enumerate(app.steps(cascade_id)):
+            steps_before = app.steps(cascade_id)
+            for index, step in enumerate(steps_before):
                 reported.setdefault(index, step.get("status"))
             outcome = run_job(app, self.panel.runtime, "antigravity", cascade_id, job,
                               self.model or self.session_model(cascade_id),
-                              reported, guard=self.guard)
+                              reported, guard=self.guard, steps_before=len(steps_before))
+            accepted = True
             result = (outcome or {}).get("outcome")
             if result == "settled":
-                settled_outcome = True
+                release = True
                 with self._lock:
                     self.state["delivered"] += 1
                     self._session_reason[cascade_id] = "已交付并执行完成"
@@ -160,16 +163,26 @@ class AntigravityLoop(threading.Thread):
                     self.state["timeouts"] += 1
                     self._session_reason[cascade_id] = "执行较久，仍在观察"
                 settled_outcome = self.observe_until_settled(app, cascade_id, job, reported)
+                release = settled_outcome
                 with self._lock:
                     self._session_reason[cascade_id] = (
                         "观察结束，执行完成" if settled_outcome else "观察中断，未确认结束")
         except Exception as error:
             with self._lock:
                 self.state["last_error"] = str(error)
-                self._session_reason[cascade_id] = "派发失败，未自动重发"
-            settled_outcome = True  # nothing is running here; release the session
+                # Only a send that provably never reached the app leaves nothing
+                # running. After acceptance any later failure — a lost reply, a
+                # read error — leaves the turn in an unknown state, so the session
+                # stays busy and is not handed to a second delivery.
+                self._session_reason[cascade_id] = (
+                    "派发失败，未自动重发" if accepted
+                    else "发送失败，未自动重发")
+                if accepted:
+                    self.state["unknown"] = self.state.get("unknown", 0) + 1
+                else:
+                    release = True
         finally:
-            if settled_outcome:
+            if release:
                 with self._lock:
                     self._busy.discard(cascade_id)
                     self._threads.pop(cascade_id, None)

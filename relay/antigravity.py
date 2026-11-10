@@ -49,6 +49,21 @@ def workspace_uri(path):
     return resolved.as_uri()
 
 
+class NotSent(Invalid):
+    """The app was reached and refused, or nothing was transmitted.
+
+    This is the only case where a caller may assert "the app never saw it".
+    """
+
+
+class OutcomeUnknown(Invalid):
+    """The request may have reached the app, but the answer was lost.
+
+    A timeout or a dropped connection says nothing about whether the app acted,
+    so a caller must record uncertainty instead of inventing a failure.
+    """
+
+
 class AntigravityServer:
     """A loopback Connect client for one running Antigravity instance.
 
@@ -87,9 +102,15 @@ class AntigravityServer:
                 raw = response.read()
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", "replace")[:400]
-            raise Invalid(f"Antigravity 调用 {method} 失败（HTTP {error.code}）：{detail}") from None
+            # The server answered with a status: it read the request, so this is a
+            # refusal, not an unknown outcome.
+            raise NotSent(f"Antigravity 调用 {method} 失败（HTTP {error.code}）：{detail}") from None
         except (urllib.error.URLError, OSError) as error:
-            raise Invalid(f"连不上 Antigravity 语言服务器（{self.base}）：{error}") from None
+            # A timeout or a reset after the bytes went out cannot be classified:
+            # the app may have run the turn and lost only the reply. Callers must
+            # be able to tell this apart from a refusal, so it gets its own type.
+            raise OutcomeUnknown(
+                f"Antigravity 调用 {method} 结果未知（{self.base}）：{error}") from None
         try:
             return json.loads(raw or b"{}")
         except ValueError:

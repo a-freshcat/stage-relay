@@ -6,6 +6,7 @@ real tool call. If one of these changes, the adapter silently stops working on
 the installed app, so the shape itself is the assertion.
 """
 
+import io
 import json
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from pathlib import Path
 from relay.antigravity_worker import observe_steps, run_job, settled
 from relay.runtime import Runtime
 from relay.domain import Store, Invalid
+from relay.antigravity import OutcomeUnknown, NotSent
 from relay.antigravity import (
     AntigravityServer,
     activity_of,
@@ -223,14 +225,24 @@ class ActivityMapping(unittest.TestCase):
                                       "session": "c1", "generation": 1}]}
 
         class App:
+            def __init__(self):
+                self.sent = 0
+
             def steps(self, cascade):
-                return [{"type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
-                         "status": "CORTEX_STEP_STATUS_DONE"}]
+                # One step before sending, plus this turn's own reply: without the
+                # growth the baseline correctly says "the old turn is still there".
+                steps = [{"type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                          "status": "CORTEX_STEP_STATUS_DONE"}]
+                if self.sent:
+                    steps.append({"type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                                  "status": "CORTEX_STEP_STATUS_DONE"})
+                return steps
 
             def models(self):
                 return [{"model": "M"}]
 
             def send(self, *a):
+                self.sent += 1
                 delivered.append(a)
 
         def make_panel(runtime, project=None):
@@ -291,7 +303,8 @@ class ActivityMapping(unittest.TestCase):
 
         class Server:
             def send(self, *a):
-                raise OSError("transport closed")
+                # What the real client raises when the socket dies mid-call.
+                raise OutcomeUnknown("transport closed")
 
         class Runtime:
             def receipt(self, agent, payload):
@@ -303,7 +316,7 @@ class ActivityMapping(unittest.TestCase):
             def observe(self, *a, **k):
                 pass
 
-        with self.assertRaises(OSError):
+        with self.assertRaises(OutcomeUnknown):
             run_job(Server(), Runtime(), "antigravity", "c", {"id": "d1", "prompt": "go"}, "M", {})
         # A dropped connection cannot prove the message never arrived, so the
         # record must say uncertain rather than assert a failure.
@@ -605,6 +618,107 @@ class ActivityMapping(unittest.TestCase):
 
         loop = AntigravityLoop(Panel(), port=0)
         self.assertFalse(loop.observe_until_settled(App(), "c1", {"id": "d1"}, {}))
+
+    def test_a_real_timeout_through_the_client_is_recorded_uncertain(self):
+        """The classification must survive the real client, not just a fake.
+
+        `AntigravityServer.call` used to wrap every network error in `Invalid`, so
+        the worker could not tell a refusal from a lost reply and reported a
+        timeout as "failed". This drives the real client: only `urlopen` is
+        patched, everything below it is the shipping code.
+        """
+        seen = []
+
+        class Runtime:
+            def receipt(self, agent, payload):
+                seen.append(payload["status"])
+
+            def lease(self, *a, **k):
+                raise AssertionError("a lost send must not start polling")
+
+            def observe(self, *a, **k):
+                pass
+
+        server = AntigravityServer(1234, "token", secure=False)
+        original = AntigravityServer.call.__globals__["urllib"].request.urlopen
+        import urllib.error as ue
+
+        def timing_out(*a, **k):
+            raise ue.URLError(TimeoutError("timed out"))
+
+        AntigravityServer.call.__globals__["urllib"].request.urlopen = timing_out
+        try:
+            with self.assertRaises(OutcomeUnknown):
+                run_job(server, Runtime(), "antigravity", "c",
+                        {"id": "d1", "prompt": "go"}, "M", {})
+        finally:
+            AntigravityServer.call.__globals__["urllib"].request.urlopen = original
+        self.assertEqual(seen, ["uncertain"])
+
+    def test_a_real_http_error_through_the_client_is_recorded_failed(self):
+        """A status code proves the server read the request and refused it."""
+        seen = []
+
+        class Runtime:
+            def receipt(self, agent, payload):
+                seen.append(payload["status"])
+
+            def lease(self, *a, **k):
+                raise AssertionError("must not poll")
+
+            def observe(self, *a, **k):
+                pass
+
+        server = AntigravityServer(1234, "token", secure=False)
+        import urllib.error as ue
+        original = AntigravityServer.call.__globals__["urllib"].request.urlopen
+
+        def refusing(request, *a, **k):
+            raise ue.HTTPError(request.full_url, 400, "Bad Request", {},
+                               io.BytesIO(b'{"error":"contents is not specified"}'))
+
+        AntigravityServer.call.__globals__["urllib"].request.urlopen = refusing
+        try:
+            with self.assertRaises(NotSent):
+                run_job(server, Runtime(), "antigravity", "c",
+                        {"id": "d1", "prompt": "go"}, "M", {})
+        finally:
+            AntigravityServer.call.__globals__["urllib"].request.urlopen = original
+        self.assertEqual(seen, ["failed"])
+
+    def test_an_old_tail_is_not_taken_as_this_turns_result(self):
+        """Before any new step, the tail still belongs to the previous turn."""
+        seen = []
+
+        class Server:
+            def send(self, *a):
+                pass
+
+            def steps(self, cascade):
+                return [{"type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                         "status": "CORTEX_STEP_STATUS_DONE"}]
+
+        class Runtime:
+            def receipt(self, agent, payload):
+                seen.append(payload["status"])
+
+            def lease(self, *a, **k):
+                return {"renewed": True}
+
+            def observe(self, *a, **k):
+                pass
+
+        import relay.antigravity_worker as module
+        original_poll, original_max = module.POLL_SECONDS, module.MAX_TURN_SECONDS
+        module.POLL_SECONDS, module.MAX_TURN_SECONDS = 0.0, 0.03
+        try:
+            outcome = run_job(Server(), Runtime(), "antigravity", "c",
+                              {"id": "d", "prompt": "go"}, "M", {}, steps_before=1)
+        finally:
+            module.POLL_SECONDS, module.MAX_TURN_SECONDS = original_poll, original_max
+        self.assertEqual(outcome["outcome"], "timeout")
+        self.assertFalse(outcome["settled"])
+        self.assertEqual(outcome["steps"], 1)
 
     def test_an_unknown_step_is_still_reported(self):
         event = activity_of([{"type": "CORTEX_STEP_TYPE_SOMETHING_NEW"}])[0]
