@@ -1,24 +1,30 @@
 {
- "finding": "Antigravity.exe 是被改名的 Node 运行时，不是 Electron 主进程",
- "evidence": {
-  "file_magic": "MZ (PE)",
-  "version_output": "v24.21.0  <- Node 的版本号，不是 Antigravity/Electron 的",
-  "node_help": "Usage: node [options] [ script.js ] [arguments]",
-  "node_eval": "process.version v24.21.0, argv0 = ...\\Antigravity.exe",
-  "electron_flag_rejected": "--enable-logging -> Antigravity.exe: bad option: --enable-logging (这是 node 的报错)",
-  "no_args": "EXIT=0 静默退出（node 无脚本时从 stdin 读取，无输入即结束）"
- },
- "consequence": [
-  "Electron 主进程从未被拉起，所以 main.js 不执行、main.log 不更新（仍停在 2026-11-08 21:45）",
-  "requestSingleInstanceLock 分支根本还没到，之前“拿不到锁”的判断不成立",
-  "窗口不会出现，CDP 不会监听，真实应用端到端无法进行"
- ],
- "install_metadata": {
-  "DisplayName": "Antigravity 2.29.0",
-  "DisplayVersion": "2.29.0",
-  "uninstaller_bytes": 174288,
-  "uninstaller_contains_electron": false
- },
- "still_usable": "resources/bin/language_server.exe (v1.11.0, 187MB) 可独立启动并已实测出 StartCascade/SendUserCascadeMessage/GetCascadeTrajectory",
- "blocked": "plan model not specified：plan_model 是 varint 枚举，藏在内层配置消息里，顶层注入被忽略"
+ "VOID": true,
+ "void_reason": "结论错误。Antigravity 启动器并未损坏；我自己的 shell 里存在 ELECTRON_RUN_AS_NODE=1，使 Electron 二进制以纯 Node 模式运行，--version/--help/-e 的表现全部由该变量造成。",
+ "superseded_by": "task-reports/2026-11-10-antigravity-launcher-CORRECTION.md",
+ "do_not_use_as_evidence": true,
+ "original_invalid_content": {
+  "finding": "Antigravity.exe 是被改名的 Node 运行时，不是 Electron 主进程",
+  "evidence": {
+   "file_magic": "MZ (PE)",
+   "version_output": "v24.21.0  <- Node 的版本号，不是 Antigravity/Electron 的",
+   "node_help": "Usage: node [options] [ script.js ] [arguments]",
+   "node_eval": "process.version v24.21.0, argv0 = ...\\Antigravity.exe",
+   "electron_flag_rejected": "--enable-logging -> Antigravity.exe: bad option: --enable-logging (这是 node 的报错)",
+   "no_args": "EXIT=0 静默退出（node 无脚本时从 stdin 读取，无输入即结束）"
+  },
+  "consequence": [
+   "Electron 主进程从未被拉起，所以 main.js 不执行、main.log 不更新（仍停在 2026-11-08 21:45）",
+   "requestSingleInstanceLock 分支根本还没到，之前“拿不到锁”的判断不成立",
+   "窗口不会出现，CDP 不会监听，真实应用端到端无法进行"
+  ],
+  "install_metadata": {
+   "DisplayName": "Antigravity 2.29.0",
+   "DisplayVersion": "2.29.0",
+   "uninstaller_bytes": 174288,
+   "uninstaller_contains_electron": false
+  },
+  "still_usable": "resources/bin/language_server.exe (v1.11.0, 187MB) 可独立启动并已实测出 StartCascade/SendUserCascadeMessage/GetCascadeTrajectory",
+  "blocked": "plan model not specified：plan_model 是 varint 枚举，藏在内层配置消息里，顶层注入被忽略"
+ }
 }
