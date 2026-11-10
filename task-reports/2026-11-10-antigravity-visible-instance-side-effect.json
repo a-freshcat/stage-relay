@@ -1,0 +1,27 @@
+{
+ "what": "独立可见实例启动的副作用记录（如实报告，未擅自清理）",
+ "what_i_did": "用项目内 qa/ag-ui/ud 作 user-data-dir、清除该子进程的 ELECTRON_RUN_AS_NODE 与 ELECTRON_OZONE_PLATFORM_HINT 后启动 Antigravity，取得可见窗口与 CDP :9226",
+ "window_appeared": true,
+ "app_report": "Antigravity/2.30.0 Chrome/152.0.7977.167 Electron/44.9.1",
+ "side_effect": "应用自身 IDE Wizard 触发，读取 ~/.gemini/antigravity 后写出两份完整副本",
+ "copies": [
+  {
+   "path": "~/.gemini/antigravity-ide",
+   "files": 3650,
+   "MB": 235.7
+  },
+  {
+   "path": "~/.gemini/antigravity-backup",
+   "files": 3650,
+   "MB": 235.7
+  }
+ ],
+ "original": "~/.gemini/antigravity 仍为 3650 文件 / 235.7 MB，antigravity_state.pbtxt mtime 保持 2026-11-06 02:49:21（未被改写）",
+ "my_action": "我启动的子进程已停止；副本保留原样，未删除、未移动 —— 删除用户真实数据不在我的授权内",
+ "shared_instances_intact": {
+  "antigravity_procs": 8,
+  "language_server_pid": 14708,
+  "stage_relay_4318": "0.1.4 正常响应"
+ },
+ "conclusion": "独立可见实例确实可以开窗口（证明“只能重启共享实例”的假设不成立）；但 Wizard 会复制用户数据目录，这条路径不适合作为常规验证手段"
+}
