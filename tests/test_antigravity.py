@@ -206,7 +206,8 @@ class ActivityMapping(unittest.TestCase):
 
             def poll(self, agent, payload):
                 self.calls += 1
-                return {"jobs": [{"id": "d1", "session": "c1", "prompt": "go"}]}
+                return {"jobs": [{"id": "d1", "session": "c1", "prompt": "go",
+                                  "project": "p1", "generation": 1}]}
 
             def observe(self, *a, **k):
                 pass
@@ -217,9 +218,9 @@ class ActivityMapping(unittest.TestCase):
             def receipt(self, *a, **k):
                 pass
 
-        class Panel:
-            def __init__(self):
-                self.runtime = Runtime()
+            def snapshot(self):
+                return {"bindings": [{"project": "p1", "agent": "antigravity",
+                                      "session": "c1", "generation": 1}]}
 
         class App:
             def steps(self, cascade):
@@ -232,7 +233,25 @@ class ActivityMapping(unittest.TestCase):
             def send(self, *a):
                 delivered.append(a)
 
-        loop = AntigravityLoop(Panel(), port=0)
+        def make_panel(runtime, project=None):
+            """A panel stub with what the loop's guard and advertise touch."""
+            class Store:
+                @staticmethod
+                def snapshot():
+                    return {"projects": [project or {
+                        "id": "p1", "demo": False, "paused": False, "closed": False,
+                        "workspace": "W"}]}
+
+            class Panel:
+                store = Store()
+
+                def __init__(self):
+                    self.runtime = runtime
+
+            return Panel()
+
+        loop = AntigravityLoop(make_panel(Runtime()), port=0)
+        loop.session_model = lambda cascade_id: "M"
         import relay.antigravity_loop as module
         original = module.cascades
         module.cascades = lambda app: [{"id": "c1", "status": "CASCADE_RUN_STATUS_IDLE",
@@ -286,8 +305,52 @@ class ActivityMapping(unittest.TestCase):
 
         with self.assertRaises(OSError):
             run_job(Server(), Runtime(), "antigravity", "c", {"id": "d1", "prompt": "go"}, "M", {})
-        self.assertEqual(seen, ["failed"])
+        # A dropped connection cannot prove the message never arrived, so the
+        # record must say uncertain rather than assert a failure.
+        self.assertEqual(seen, ["uncertain"])
         self.assertNotIn("delivered", seen)
+
+    def test_a_refused_send_is_failed_because_it_is_provably_not_sent(self):
+        seen = []
+
+        class Server:
+            def send(self, *a):
+                raise Invalid("模型未指定")
+
+        class Runtime:
+            def receipt(self, agent, payload):
+                seen.append(payload["status"])
+
+            def lease(self, *a, **k):
+                raise AssertionError("must not poll")
+
+            def observe(self, *a, **k):
+                pass
+
+        with self.assertRaises(Invalid):
+            run_job(Server(), Runtime(), "antigravity", "c", {"id": "d1", "prompt": "go"}, "M", {})
+        self.assertEqual(seen, ["failed"])
+
+    def test_a_stale_binding_is_refused_before_anything_is_sent(self):
+        """A rebind or pause while waiting must not deliver into the old session."""
+        seen, sent = [], []
+
+        class Server:
+            def send(self, *a):
+                sent.append(a)
+
+        class Runtime:
+            def receipt(self, agent, payload):
+                seen.append(payload["status"])
+
+        def guard(job):
+            return "会话已换绑，原租约不再有效"
+
+        with self.assertRaises(Invalid):
+            run_job(Server(), Runtime(), "antigravity", "c",
+                    {"id": "d1", "prompt": "go"}, "M", {}, guard=guard)
+        self.assertEqual(sent, [])
+        self.assertEqual(seen, ["failed"])
 
     def test_a_step_that_finishes_is_reported_again_with_its_completion(self):
         """RUNNING then DONE is one step becoming finished, not a duplicate."""
@@ -362,7 +425,8 @@ class ActivityMapping(unittest.TestCase):
 
             def poll(self, agent, payload):
                 self.polls += 1
-                return {"jobs": [{"id": "d1", "session": "c1", "prompt": "go"}]}
+                return {"jobs": [{"id": "d1", "session": "c1", "prompt": "go",
+                                  "project": "p1", "generation": 1}]}
 
             def receipt(self, *a, **k):
                 pass
@@ -373,9 +437,9 @@ class ActivityMapping(unittest.TestCase):
             def observe(self, *a, **k):
                 pass
 
-        class Panel:
-            def __init__(self):
-                self.runtime = Runtime()
+            def snapshot(self):
+                return {"bindings": [{"project": "p1", "agent": "antigravity",
+                                      "session": "c1", "generation": 1}]}
 
         class App:
             def steps(self, cascade):
@@ -387,7 +451,24 @@ class ActivityMapping(unittest.TestCase):
             def send(self, *a):
                 pass
 
-        loop = AntigravityLoop(Panel(), port=0)
+        def make_panel(runtime, project=None):
+            """A panel stub with what the loop's guard and advertise touch."""
+            class Store:
+                @staticmethod
+                def snapshot():
+                    return {"projects": [project or {
+                        "id": "p1", "demo": False, "paused": False, "closed": False,
+                        "workspace": "W"}]}
+
+            class Panel:
+                store = Store()
+
+                def __init__(self):
+                    self.runtime = runtime
+
+            return Panel()
+
+        loop = AntigravityLoop(make_panel(Runtime()), port=0)
         import relay.antigravity_loop as module
         import relay.antigravity_worker as worker
         original = module.cascades
@@ -411,6 +492,119 @@ class ActivityMapping(unittest.TestCase):
         self.assertEqual(loop.snapshot()["delivered"], before)
         self.assertEqual(loop.snapshot()["delivered"], 0)
         self.assertIn("c1", loop._busy)
+
+    def test_a_busy_session_is_advertised_as_running(self):
+        """The Runtime must not lease a second job for a session we are running.
+
+        Trusting the app's own idle status would let it lease again while this
+        worker is mid-turn, and the first delivery would be orphaned.
+        """
+        from relay.antigravity_loop import AntigravityLoop
+
+        seen = {}
+
+        class Runtime:
+            def poll(self, agent, payload):
+                seen["sessions"] = payload["sessions"]
+                return {"jobs": []}
+
+        class Store:
+            @staticmethod
+            def snapshot():
+                return {"projects": []}
+
+        class Panel:
+            store = Store()
+
+            def __init__(self):
+                self.runtime = Runtime()
+
+        loop = AntigravityLoop(Panel(), port=0)
+        loop._busy.add("c1")
+        hosted = [{"id": "c1", "status": "CASCADE_RUN_STATUS_IDLE", "workspace": "W"},
+                  {"id": "c2", "status": "CASCADE_RUN_STATUS_IDLE", "workspace": "W"}]
+        loop.advertise(hosted)
+        status = {s["id"]: s["status"] for s in seen["sessions"]}
+        self.assertEqual(status["c1"], "running", "busy session must read running")
+        self.assertEqual(status["c2"], "idle")
+
+    def test_an_empty_catalogue_is_still_published(self):
+        """Silence would look like a dead host; the empty list is the signal."""
+        from relay.antigravity_loop import AntigravityLoop
+
+        seen = {}
+
+        class Runtime:
+            def poll(self, agent, payload):
+                seen["called"] = True
+                seen["sessions"] = payload["sessions"]
+                return {"jobs": []}
+
+        class Store:
+            @staticmethod
+            def snapshot():
+                return {"projects": []}
+
+        class Panel:
+            store = Store()
+
+            def __init__(self):
+                self.runtime = Runtime()
+
+        loop = AntigravityLoop(Panel(), port=0)
+        loop.advertise([])
+        self.assertTrue(seen["called"])
+        self.assertEqual(seen["sessions"], [])
+
+    def test_a_long_turn_is_observed_until_the_app_settles_it(self):
+        """A timeout must keep watching, not claim the turn ended."""
+        from relay.antigravity_loop import AntigravityLoop
+
+        class App:
+            def __init__(self):
+                self.calls = 0
+
+            def steps(self, cascade):
+                self.calls += 1
+                # Still running on the first look, finished on the second.
+                if self.calls < 2:
+                    return [{"type": "CORTEX_STEP_TYPE_MCP_TOOL",
+                             "status": "CORTEX_STEP_STATUS_RUNNING"}]
+                return [{"type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                         "status": "CORTEX_STEP_STATUS_DONE"}]
+
+        class Runtime:
+            def lease(self, *a, **k):
+                return {"renewed": True}
+
+            def observe(self, *a, **k):
+                pass
+
+        class Panel:
+            def __init__(self):
+                self.runtime = Runtime()
+
+        loop = AntigravityLoop(Panel(), port=0)
+        settled = loop.observe_until_settled(App(), "c1", {"id": "d1"}, {})
+        self.assertTrue(settled)
+
+    def test_observation_stops_when_the_app_goes_away(self):
+        from relay.antigravity_loop import AntigravityLoop
+
+        class App:
+            def steps(self, cascade):
+                raise OSError("app closed")
+
+        class Runtime:
+            def lease(self, *a, **k):
+                return {"renewed": True}
+
+        class Panel:
+            def __init__(self):
+                self.runtime = Runtime()
+
+        loop = AntigravityLoop(Panel(), port=0)
+        self.assertFalse(loop.observe_until_settled(App(), "c1", {"id": "d1"}, {}))
 
     def test_an_unknown_step_is_still_reported(self):
         event = activity_of([{"type": "CORTEX_STEP_TYPE_SOMETHING_NEW"}])[0]

@@ -318,33 +318,45 @@ def locate(running_ports, preferred=None):
             continue
     raise Invalid("没有发现可用的 Antigravity 语言服务器端口。")
 
-def antigravity_ports(candidates=None):
-    """Candidate language-server ports, taken from the live app process.
+def antigravity_ports(app_data_dir="antigravity"):
+    """Ports owned by the real language-server process, and nothing else.
 
-    Guessing offsets from `DevToolsActivePort` was wrong: the app is relaunched on
-    new ports, so a fixed offset stops matching. What is stable is that the
-    language server owns the listening sockets itself, so the ports it opened are
-    read from the process table; `locate` then accepts one only when it answers
-    with the app's own CSRF-bearing page. A candidate that is gRPC or the host
-    bridge is rejected, not trusted.
+    Picking "any local port that answers with a CSRF page" was wrong: it can bind
+    to a different app instance and then report on the wrong sessions. The
+    language server itself is the authority — its own listening sockets are read
+    from the process that has `--app_data_dir <dir>`, so a port belongs to this
+    app installation by provenance rather than by a successful probe.
     """
-    if candidates is not None:
-        return list(candidates)
+    import json as _json
     import subprocess
-    script = ("Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | "
-              "Where-Object {$_.LocalAddress -eq '127.0.0.1'} | "
-              "Select-Object -ExpandProperty LocalPort")
+    script = ("Get-CimInstance Win32_Process -Filter \"Name='language_server.exe'\" | "
+              "Select-Object ProcessId,CommandLine | ConvertTo-Json -Depth 2")
     try:
-        out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+        raw = subprocess.run(["powershell", "-NoProfile", "-Command", script],
                              capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
+        processes = _json.loads(raw) if raw.strip() else []
+    except (OSError, subprocess.SubprocessError, ValueError):
         return []
+    if isinstance(processes, dict):
+        processes = [processes]
     ports, seen = [], set()
-    for token in out.split():
-        if not token.isdigit():
+    for process in processes:
+        command = process.get("CommandLine") or ""
+        if app_data_dir and f"--app_data_dir {app_data_dir}" not in command:
+            # A different installation or profile; its sessions are not ours.
             continue
-        port = int(token)
-        if port not in seen:
-            seen.add(port)
-            ports.append(port)
+        owned = ("Get-NetTCPConnection -State Listen -OwningProcess "
+                 f"{int(process['ProcessId'])} -ErrorAction SilentlyContinue | "
+                 "Select-Object -ExpandProperty LocalPort")
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", owned],
+                                 capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for token in out.split():
+            if token.isdigit():
+                port = int(token)
+                if port not in seen:
+                    seen.add(port)
+                    ports.append(port)
     return ports

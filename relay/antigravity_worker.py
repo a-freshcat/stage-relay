@@ -99,7 +99,7 @@ def settled(steps):
     return False
 
 
-def run_job(server, runtime, agent_id, cascade, job, plan_model, reported):
+def run_job(server, runtime, agent_id, cascade, job, plan_model, reported, guard=None):
     """Deliver one leased job to the app and report what it produced.
 
     Returns a dict describing the outcome, so the caller never has to infer
@@ -111,14 +111,25 @@ def run_job(server, runtime, agent_id, cascade, job, plan_model, reported):
         runtime.receipt(agent_id, {"id": job["id"], "status": "failed",
                                    "detail": "派发内容为空，未发送。"})
         raise Invalid("派发内容为空，未发送。")
+    if guard is not None:
+        # The lease may have gone stale while this worker was waiting: the user
+        # could have rebound, paused or closed the project. Sending then would
+        # deliver into a session that no longer answers for this work.
+        problem = guard(job)
+        if problem:
+            runtime.receipt(agent_id, {"id": job["id"], "status": "failed",
+                                       "detail": problem})
+            raise Invalid(problem)
     try:
         server.send(cascade, prompt, plan_model)
     except Exception as error:
-        # The app refused or the transport broke. This is not a delivery: mark it
-        # failed and never retry automatically, because we cannot prove whether
-        # the message reached the session.
-        runtime.receipt(agent_id, {"id": job["id"], "status": "failed",
-                                   "detail": f"发送未成功：{error}"})
+        # A refusal is provably "not sent"; a timeout or a dropped connection is
+        # not. Claiming `failed` for the second case would assert something we
+        # cannot know, so it becomes `uncertain` and is never retried here.
+        definite = isinstance(error, (Invalid, ValueError, KeyError))
+        status = "failed" if definite else "uncertain"
+        runtime.receipt(agent_id, {"id": job["id"], "status": status,
+                                   "detail": f"发送异常（{type(error).__name__}）：{error}"})
         raise
     # Accepted by the app; from here the turn may run.
     runtime.receipt(agent_id, {"id": job["id"], "status": "delivered",

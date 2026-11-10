@@ -1,0 +1,60 @@
+{
+ "fixes_this_round": {
+  "lease_after_acceptance": {
+   "problem": "lease() 只在 status=leased 续租；worker 发送后改 delivered，执行期续租无效",
+   "fix": "lease() 接受 leased 与 delivered 两种在途状态；其它状态明确返回 renewed=False"
+  },
+  "advertise_busy_as_running": {
+   "problem": "先 poll 租出、再 start_delivery 见 _busy 直接 return，可能丢已租 job",
+   "fix": "advertise 把 _busy 中会话强制报 running；若仍出现重复租约，记录 last_error 而非静默丢弃"
+  },
+  "empty_catalogue": {
+   "fix": "无会话也 poll，发布空目录，避免宿主被误判离线"
+  },
+  "timeout_observation": {
+   "problem": "超时后 worker 已 return，却称仍在观察；_busy 清理依赖全局 reason 字符串，并发会话互相覆盖",
+   "fix": "observe_until_settled 持续观察直到应用确认结束；per-session 状态装在 _session_reason，_lock 保护，不再读全局 reason"
+  },
+  "model_explicit": {
+   "problem": "_default_model 取 models()[0]，会静默换模型",
+   "fix": "session_model() 从该 cascade 的 trajectoryMetadata 取 model/generatorModel/planModel；取不到返回 None"
+  },
+  "send_error_classified": {
+   "problem": "连接断开也统一记 failed",
+   "fix": "可证明未发送（Invalid/ValueError/KeyError）记 failed；超时/断线记 uncertain，不自动重发"
+  },
+  "pre_send_guard": {
+   "fix": "发送前校验 项目存在/未暂停/未结束、绑定仍是该会话、generation 未变；不满足则 failed 且不发"
+  },
+  "port_provenance": {
+   "problem": "上一版取全机监听端口再探测，可能连到别的实例",
+   "fix": "只取 --app_data_dir antigravity 的 language_server.exe 进程所拥有的监听端口"
+  }
+ },
+ "provenance": {
+  "ls_process": 24760,
+  "app_data_dir": "antigravity",
+  "owned_ports": [
+   63918,
+   59571,
+   59570
+  ],
+  "chosen": 59571
+ },
+ "target_instance": {
+  "heartbeat": "ok",
+  "models": 14,
+  "cascades": 0,
+  "meaning": "该实例确无既有会话；旧 cascade 属于上一个实例，不把旧实证冒充本版成功"
+ },
+ "tests": {
+  "test_antigravity.py": "32 passed（新增 4 条：busy→running、空目录发布、长回合持续观察、应用消失停止观察）",
+  "full": "226 passed, 1 skipped",
+  "ui_probe": "ALL UI CHECKS PASSED"
+ },
+ "not_done": [
+  "未新建探针实例",
+  "未重启共享应用",
+  "未把 LEASE_SECONDS 当作唯一修复（改为按状态续租 + guard）"
+ ]
+}

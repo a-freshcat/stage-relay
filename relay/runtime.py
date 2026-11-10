@@ -394,10 +394,14 @@ class Runtime:
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             row=db.execute("SELECT status FROM native_jobs WHERE id=?",(job_id,)).fetchone()
-            if not row or row[0]!='leased':
+            # `delivered` means the app accepted the message, not that the turn is
+            # over: the job is still held by this worker while it runs, so it must
+            # be renewed too. Otherwise the expiry sweep would reclaim a turn that
+            # is actively executing and the next delivery would land inside it.
+            if not row or row[0] not in {'leased','delivered'}:
                 return {'renewed':False,'status':row[0] if row else None}
             db.execute('UPDATE native_jobs SET updated=? WHERE id=?',(time.time(),job_id))
-        return {'renewed':True,'status':'leased'}
+        return {'renewed':True,'status':row[0]}
 
     def reconcile(self):
         """Re-check registrations after a crash instead of guessing by name.
@@ -800,7 +804,7 @@ class Runtime:
             row=db.execute('SELECT status,body FROM native_jobs WHERE id=? AND agent=?',(payload.get('id'),agent)).fetchone()
             if not row:
                 raise Invalid('派发记录不存在。')
-            if payload.get('status') not in {'delivered','failed'}:
+            if payload.get('status') not in {'delivered','failed','uncertain'}:
                 raise Invalid('回执状态无效。')
             if row[0] == payload['status']:
                 return {'saved':True}
