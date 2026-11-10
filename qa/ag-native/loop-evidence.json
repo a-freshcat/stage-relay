@@ -1,0 +1,57 @@
+{
+ "qa_project": "project_7cf085ba6b15",
+ "title": "QA · Antigravity 闭环",
+ "workspace": "C:\\Users\\handsomeboys\\Documents\\ChatGPT\\new_subagent\\qa\\ag-native\\workspace",
+ "assignments": {
+  "planner": "codex",
+  "executor": "antigravity",
+  "reporter": "codex"
+ },
+ "issue": "issue_b369c78e16c2",
+ "issue_members": [
+  "codex",
+  "antigravity",
+  "deepseek"
+ ],
+ "binding": {
+  "agent": "antigravity",
+  "session": "650c185b-2fa3-4211-9977-655df638b1e8",
+  "generation": 1
+ },
+ "delivered_job": "delivery_4375b13d2e5c",
+ "artifact": {
+  "path": "qa\\ag-native\\workspace\\loop-proof.txt",
+  "exists": true,
+  "bytes": 8,
+  "sha256": "faa4e8129341afc0bcb5fad80dd0f7160b6c1aa58713d0cc1cd787af60343410",
+  "content": "loop-ok"
+ },
+ "issue_messages": [
+  {
+   "id": "message_4cea935773a8",
+   "actor": "user",
+   "body": "最小派发验证"
+  },
+  {
+   "id": "message_1b8e093ee3a7",
+   "actor": "user",
+   "body": "probe"
+  },
+  {
+   "id": "message_f63c95ef9a1a",
+   "actor": "codex",
+   "body": "@用户\n收到 probe。Codex已接收此QA议题；Antigravity自动执行与结果回传仍待独立核验。"
+  },
+  {
+   "id": "message_8cfc10f95ef5",
+   "actor": "codex",
+   "body": "请在当前工作区创建 loop-proof.txt，内容一行：loop-ok"
+  },
+  {
+   "id": "message_315273ac6d9a",
+   "actor": "antigravity",
+   "body": "@codex\n已在当前工作区创建文件 loop-proof.txt，内容包含单行「loop-ok」。\n\n关联事件 #566"
+  }
+ ],
+ "note": "Antigravity 由 Runtime 派发、在既存 cascade 上真实执行 write_file 并回帖；这是应用自身行为。新建 cascade 仍不支持。"
+}

@@ -7,9 +7,13 @@ the installed app, so the shape itself is the assertion.
 """
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
+from relay.antigravity_worker import run_job
+from relay.runtime import Runtime
+from relay.domain import Store, Invalid
 from relay.antigravity import (
     AntigravityServer,
     activity_of,
@@ -131,6 +135,51 @@ class ActivityMapping(unittest.TestCase):
         event = activity_of(steps)[0]
         self.assertEqual(event["type"], "mcp/call")
         self.assertIsNone(event["data"]["error"])
+
+    def test_appending_to_an_existing_cascade_is_what_the_worker_sends(self):
+        """The worker must reuse a cascade, never start one.
+
+        A fresh cascade rejects its first message on this install, so a worker
+        that started one would report success for a turn that never ran.
+        """
+        sent = {}
+
+        class Server:
+            def send(self, cascade, text, model):
+                sent.update(cascade=cascade, text=text, model=model)
+
+            def steps(self, cascade):
+                return [{"type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                         "status": "CORTEX_STEP_STATUS_DONE"}]
+
+        class Runtime:
+            def receipt(self, *a, **k):
+                pass
+
+            def observe(self, *a, **k):
+                pass
+
+        run_job(Server(), Runtime(), "antigravity", "cascade-existing",
+                {"id": "d1", "prompt": "do it"}, "MODEL_X", set())
+        self.assertEqual(sent["cascade"], "cascade-existing")
+        self.assertEqual(sent["text"], "do it")
+
+    def test_a_delivery_without_a_prompt_is_refused(self):
+        class Runtime:
+            def receipt(self, *a, **k):
+                raise AssertionError("must not report delivery for an empty prompt")
+
+        with self.assertRaises(Invalid):
+            run_job(object(), Runtime(), "antigravity", "c", {"id": "d"}, "M", set())
+
+    def test_a_new_antigravity_session_is_refused_rather_than_faked(self):
+        """Creation is an open defect; the panel must not claim it works."""
+        runtime = Runtime(Store(Path(tempfile.mkdtemp()) / "db.sqlite3"))
+        project = runtime.store.apply("project_create", {
+            "title": "t", "goal": "g", "workspace": str(Path(tempfile.mkdtemp()))})
+        with self.assertRaises(Invalid) as caught:
+            runtime.create_session(project["id"], "antigravity")
+        self.assertIn("不支持新建会话", str(caught.exception))
 
     def test_an_unknown_step_is_still_reported(self):
         event = activity_of([{"type": "CORTEX_STEP_TYPE_SOMETHING_NEW"}])[0]

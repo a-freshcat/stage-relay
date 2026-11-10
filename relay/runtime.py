@@ -183,8 +183,15 @@ class Runtime:
         state=self.store.snapshot()
         project=next((p for p in state['projects'] if p['id']==project_id and not p['demo']),None)
         agent=next((a for a in state['agents'] if a['id']==agent_id),None)
-        if not project or not agent or agent['app'] not in {'dsh','codex'} or not project.get('workspace'):
-            raise Invalid('请选择真实项目与 Codex / DSH 成员。')
+        if not project or not agent or agent['app'] not in {'dsh','codex','antigravity'} or not project.get('workspace'):
+            raise Invalid('请选择真实项目与 Codex / DSH / Antigravity 成员。')
+        if agent['app']=='antigravity':
+            # Creating a cascade is broken on this install: the first message is
+            # rejected with `400 GenerateContentRequest.contents is not
+            # specified`, while appending to an existing cascade works. Refusing
+            # here keeps the panel honest instead of reporting a session that
+            # can never run.
+            raise Invalid('Antigravity 暂不支持新建会话：新会话首轮执行会失败。请在应用中打开会话后改用绑定。')
         if project.get('closed'):raise Invalid('任务已结束，不能创建新的工作会话。')
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -818,7 +825,7 @@ class Runtime:
             if not db.execute('SELECT 1 FROM native_bindings WHERE agent=? AND session=?',(agent,session)).fetchone():
                 raise Invalid('只接收已授权绑定会话的活动。')
             event=payload.get('event',{})
-            if event.get('type') not in {'request/header','session/config','tool/call','tool/result','assistant/message','turn/start','turn/end'}:
+            if event.get('type') not in {'request/header','session/config','tool/call','tool/result','mcp/call','assistant/message','user/message','turn/start','turn/end','error','step'}:
                 raise Invalid('不支持的原生活动。')
             db.execute('INSERT OR IGNORE INTO native_activity VALUES(?,?,?,?)',(agent,session,int(payload['seq']),json.dumps(dict(type=event['type'],data=event.get('data',{}),created=now()),ensure_ascii=False)))
         return {'saved':True}
