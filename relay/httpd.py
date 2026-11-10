@@ -270,6 +270,7 @@ class Handler(BaseHTTPRequestHandler):
                     state['runtime'] = self.server.runtime.snapshot()
                     state['codexNative'] = self.server.codex.snapshot()
                     state['storage_path'] = str(self.server.store.path.parent)
+                    state['app_version'] = __version__
                     self.json(state)
                 elif path == "/api/settings/cleanup/preview":
                     self.json(self.server.cleanup().settings_preview(self.server.store.snapshot()["projects"]))

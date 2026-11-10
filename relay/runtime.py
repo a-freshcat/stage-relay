@@ -1,7 +1,6 @@
 """Durable native-session bindings and delivery receipts, separate from model output."""
 
 import json
-import sqlite3
 import time
 from . import brief, rules
 from .domain import Invalid, now, uid
@@ -11,6 +10,7 @@ class Runtime:
     def __init__(self, store):
         self.store = store
         with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             db.execute('CREATE TABLE IF NOT EXISTS native_hosts(agent TEXT PRIMARY KEY, body TEXT NOT NULL, seen REAL NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS native_bindings(project TEXT, agent TEXT, session TEXT, PRIMARY KEY(project,agent))')
             db.execute('CREATE TABLE IF NOT EXISTS native_jobs(id TEXT PRIMARY KEY, project TEXT, agent TEXT, session TEXT, event INTEGER, status TEXT, body TEXT, updated REAL, UNIQUE(event,agent))')
@@ -32,15 +32,11 @@ class Runtime:
             # Rules recovery: the full collaboration rules are injected once per
             # binding generation (and again after a session goes quiet or comes
             # back from a gap), never on every wake.
-            db.execute('CREATE TABLE IF NOT EXISTS native_rules(agent TEXT, session TEXT, generation INTEGER NOT NULL, full_sent INTEGER NOT NULL, full_confirmed INTEGER NOT NULL, compact INTEGER NOT NULL, PRIMARY KEY(agent,session))')
-            # Which rules version a session actually holds. Without it a changed
-            # rules text never reaches a session that confirmed the previous one:
-            # the digest would be the only carrier, and the full section would be
-            # silently stale. Adding the column is a no-op on a fresh database.
-            try:
+            db.execute('CREATE TABLE IF NOT EXISTS native_rules(agent TEXT, session TEXT, generation INTEGER NOT NULL, full_sent INTEGER NOT NULL, full_confirmed INTEGER NOT NULL, compact INTEGER NOT NULL, rules_version TEXT, PRIMARY KEY(agent,session))')
+            # Preserve rule confirmation history when opening an older database.
+            columns = {column[1] for column in db.execute('PRAGMA table_info(native_rules)')}
+            if 'rules_version' not in columns:
                 db.execute('ALTER TABLE native_rules ADD COLUMN rules_version TEXT')
-            except sqlite3.OperationalError:
-                pass
         self.reconcile()
         self.migrate_queued()
 
@@ -81,7 +77,7 @@ class Runtime:
         row = db.execute('SELECT generation,full_sent,full_confirmed,rules_version FROM native_rules WHERE agent=? AND session=?', (agent, session)).fetchone()
         now_ts = time.time()
         if not row or row[0] != generation:
-            db.execute('INSERT INTO native_rules VALUES(?,?,?,?,?,?,?) ON CONFLICT(agent,session) DO UPDATE SET generation=excluded.generation,full_sent=excluded.full_sent,full_confirmed=0,rules_version=excluded.rules_version',
+            db.execute('INSERT INTO native_rules (agent,session,generation,full_sent,full_confirmed,compact,rules_version) VALUES(?,?,?,?,?,?,?) ON CONFLICT(agent,session) DO UPDATE SET generation=excluded.generation,full_sent=excluded.full_sent,full_confirmed=0,rules_version=excluded.rules_version',
                        (agent, session, generation, now_ts, 0, 0, rules.VERSION))
             return rules.full(agent)
         _, full_sent, confirmed, held_version = row

@@ -258,6 +258,21 @@ class ContextGrowth(unittest.TestCase):
         self.assertIn("一、身份与工具", sent)
         self.assertIn("stage-relay/rules/v99", sent)
 
+    def test_rule_schema_upgrade_preserves_rows_and_accepts_extra_columns(self):
+        with self.store.connect() as db:
+            db.execute('DROP TABLE native_rules')
+            db.execute('CREATE TABLE native_rules(agent TEXT, session TEXT, generation INTEGER NOT NULL, full_sent INTEGER NOT NULL, full_confirmed INTEGER NOT NULL, compact INTEGER NOT NULL, PRIMARY KEY(agent,session))')
+            db.execute("INSERT INTO native_rules VALUES('deepseek','older-thread',1,100,1,4)")
+        self.runtime = Runtime(self.store)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT full_confirmed,compact,rules_version FROM native_rules WHERE session='older-thread'").fetchone(), (1, 4, None))
+            db.execute("ALTER TABLE native_rules ADD COLUMN future_metadata TEXT DEFAULT 'retained'")
+        self.runtime = Runtime(self.store)
+        job, = self.wake('升级后的首次唤醒')
+        self.assertIn(rules.VERSION, job['prompt'])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT rules_version,future_metadata FROM native_rules WHERE session='native-one'").fetchone(), (rules.VERSION, 'retained'))
+
     def test_rebinding_sends_the_rules_again(self):
         self.wake("绑定一")
         self.runtime.poll("deepseek", {"app": "dsh", "sessions": self.sessions + [
