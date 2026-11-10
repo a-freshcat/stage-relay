@@ -1,0 +1,49 @@
+{
+ "what": "原生会话在隔离实例中的脱敏证据（现有可得部分）",
+ "instance": {
+  "port": 4451,
+  "data": "qa/bound-live/data",
+  "in_package_version": "0.1.4-bound",
+  "source_commit": "8e77585"
+ },
+ "bindings": [
+  {
+   "project": "project_9beb2f493b59",
+   "agent": "codex",
+   "session": "probe-thread-codex"
+  }
+ ],
+ "deferred": [],
+ "jobs": [
+  {
+   "id": "delivery_9481ae181995",
+   "event": 3,
+   "status_observed": "leased -> uncertain",
+   "generation": 1,
+   "kind": "assign",
+   "merged_events": [
+    10
+   ]
+  },
+  {
+   "id": "delivery_a3fc8914167f",
+   "event": 4,
+   "status": "queued",
+   "generation": 1,
+   "kind": "issue_create",
+   "merged_events": null
+  },
+  {
+   "id": "delivery_9f172fe6d85a",
+   "event": 10,
+   "status": "coalesced",
+   "generation": 1,
+   "kind": "message",
+   "merged_events": null
+  }
+ ],
+ "note_on_merged": "event 10 是 deepseek 的 @codex 点名交接；它以 merged_events 随 assign 派发载荷送达，deferred 为空，全程无用户发言",
+ "native_activity": [],
+ "activity_gap": "本轮重建会话后 native_activity 为空：job 3 已处于 uncertain，宿主未再发起新 turn，因此没有可引用的原生工具活动或错误记录",
+ "honest_status": "派发层证据成立；本轮原生回应未产生，不能作为原生读回/回复的证据"
+}

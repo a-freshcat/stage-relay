@@ -1,0 +1,14 @@
+{
+ "source_commit": "8e77585",
+ "candidate_dir": "release/StageRelay-0.1.4-bound",
+ "Stage Relay.exe": {
+  "sha256": "2A23BB9527454636A0994EA08CE6D2E676203DE040E2854D92C4847D7CED1C58",
+  "bytes": 5510408
+ },
+ "StageRelayBridge.exe": {
+  "sha256": "1ED5362CF29D2EE6FB214B07BE3F752A10545CEC16D2B3851CFA573ACF59EB4C",
+  "bytes": 9262040
+ },
+ "in_package_version": "0.1.4-bound",
+ "note": "0.1.4-bound 是包内标识，不是提交哈希；提交来源为 8e77585"
+}
