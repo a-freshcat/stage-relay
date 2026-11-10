@@ -400,6 +400,45 @@ class Workflows(unittest.TestCase):
                 "SELECT seq FROM native_deferred WHERE agent='codex'")]
         self.assertNotEqual(held, [], "nothing was bounded at all")
 
+    def test_later_member_traffic_cannot_defer_an_earlier_handoff(self):
+        """Eligibility is fixed where the message was written.
+
+        A handoff that was inside the allowance when sent must not lose its
+        place because more member messages arrived before the first poll.
+        """
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()
+        for n in range(3):
+            self.act("message", "codex", issue_id=i["id"], body="进度第 %d 条" % n)
+        self.act("message", "deepseek", issue_id=i["id"], body="@codex 请核验这一项")
+        # Backlog arrives before anything is polled.
+        for n in range(4):
+            self.act("message", "codex", issue_id=i["id"], body="补充 %d" % n)
+        jobs = self.poll_for("codex")
+        carried = [e for j in jobs for e in (j.get("merged_events") or [])]
+        self.assertTrue("message" in [j["kind"] for j in jobs] or carried,
+                        "the earlier handoff lost its place to later traffic")
+
+    def test_a_user_reply_still_releases_a_deferred_handoff(self):
+        """Postponing must stay reversible; the user is the one who releases it."""
+        self.act("assign", assignments={"planner": "codex", "executor": "deepseek",
+                                        "reporter": "codex"})
+        i = self.issue()
+        for n in range(9):
+            self.act("message", "deepseek", issue_id=i["id"], body="@codex 第 %d 次" % n)
+        self.poll_for("codex")
+        with self.runtime.store.connect() as db:
+            held_before = [r[0] for r in db.execute(
+                "SELECT seq FROM native_deferred WHERE agent='codex'")]
+        self.assertNotEqual(held_before, [], "nothing was bounded at all")
+        self.act("message", "user", issue_id=i["id"], body="请继续")
+        jobs = self.poll_for("codex")
+        self.assertTrue(jobs, "a user reply did not release the deferred handoff")
+        with self.runtime.store.connect() as db:
+            self.assertEqual([r[0] for r in db.execute(
+                "SELECT seq FROM native_deferred WHERE agent='codex'")], [])
+
     def test_the_panel_button_alone_wakes_the_reporter(self):
         """The wake whitelist must include the request, or the button does nothing.
 

@@ -33,6 +33,10 @@ for n in range(2):
     store.apply("message", {"project_id": pid, "issue_id": issue["id"], "body": f"@deepseek clarification {n}"}, "codex")
 drain()
 store.apply("message", {"project_id": pid, "issue_id": issue["id"], "body": "@codex ready-for-supervision"}, "deepseek")
+if "--backlog" in sys.argv:
+    # Later messages must not revoke an earlier event's delivery eligibility.
+    for n in range(4):
+        store.apply("message", {"project_id": pid, "issue_id": issue["id"], "body": f"@codex later evidence {n}"}, "deepseek")
 before = drain()
 with store.connect() as db:
     deferred = db.execute("SELECT seq,reason FROM native_deferred WHERE agent='codex'").fetchall()

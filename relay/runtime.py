@@ -65,6 +65,30 @@ class Runtime:
         return None
 
     @staticmethod
+    def _message_position(messages, message_id):
+        """How many member replies had piled up when this message was written.
+
+        Anchors the discussion allowance to the message's own place in the
+        thread. Counting from the end instead makes an event's eligibility
+        depend on later traffic, so an already-stored handoff is deferred
+        retroactively by messages that arrive after it.
+
+        Returns None when the message is no longer in the list.
+        """
+        index=next((n for n,m in enumerate(messages) if m.get('id')==message_id),None)
+        if index is None:
+            return None
+        # The last human word in the thread, wherever it is. Taking it from the
+        # whole list is what lets a user reply release an event that was already
+        # postponed: a user message after this one makes the position negative,
+        # so the event becomes eligible again. Later *member* messages do not
+        # move either number, so they cannot retroactively defer it either.
+        latest_user=max((n for n,m in enumerate(messages) if m['actor']=='user'),default=-1)
+        # Count this message as part of the run: the fourth consecutive reply is
+        # the one the allowance stops, matching the original rule.
+        return index-latest_user
+
+    @staticmethod
     def _decide_rules(db, agent, session, generation):
         """Return the rules block to inject, or '' when the session already has it.
 
@@ -541,14 +565,22 @@ class Runtime:
                             db.execute('DELETE FROM native_deferred WHERE project=? AND agent=? AND seq=?',(project,agent,seq))
                             continue
                         # Human messages reset the bounded autonomous discussion allowance.
+                        # The allowance is measured where the message was written, not
+                        # against the thread as it is now: otherwise a handoff that was
+                        # eligible when sent loses its place as soon as later messages
+                        # arrive, and waits for a user reply it never asked for.
+                        #
                         # A message that names this member is a handoff addressed to it,
-                        # not idle chatter: bounding that would make an explicit request
-                        # wait for an unrelated user reply. The bound still counts named
-                        # messages, so two members cannot name each other forever.
-                        latest_user=max((m for m in range(len(issue['messages'])) if issue['messages'][m]['actor']=='user'),default=-1)
+                        # so it gets a wider allowance; naming is still counted, so two
+                        # members cannot name each other indefinitely.
+                        position=self._message_position(issue['messages'],message_id)
+                        if position is None:
+                            # The record is gone (recycled between write and poll).
+                            latest_user=max((m for m in range(len(issue['messages'])) if issue['messages'][m]['actor']=='user'),default=-1)
+                            position=len(issue['messages'])-1-latest_user
                         addressed=agent in (detail.get('mentions') or [])
                         allowance=8 if addressed else 4
-                        if len(issue['messages'])-latest_user-1>=allowance:
+                        if position>=allowance:
                             # Postponed, not skipped, and only for this event: later
                             # events of other issues stay deliverable.
                             db.execute('INSERT OR IGNORE INTO native_deferred VALUES(?,?,?,?,?)',(project,agent,seq,'issue-discussion-bound',time.time()))
@@ -558,9 +590,15 @@ class Runtime:
                         # Same bound as issue chat: members stop after four consecutive
                         # replies until the user speaks again in the project thread.
                         chat=p.get('chat',[])
-                        latest_user=max((n for n in range(len(chat)) if chat[n]['actor']=='user'),default=-1)
+                        # Same rule as issue chat: count from where the message was
+                        # written, so later traffic cannot retroactively defer it.
                         named=agent in (detail.get('mentions') or [])
-                        if len(chat)-latest_user-1>=(8 if named else 4):
+                        message_id=detail.get('message_id')
+                        position=self._message_position(chat,message_id)
+                        if position is None:
+                            latest_user=max((n for n in range(len(chat)) if chat[n]['actor']=='user'),default=-1)
+                            position=len(chat)-1-latest_user
+                        if position>=(8 if named else 4):
                             db.execute('INSERT OR IGNORE INTO native_deferred VALUES(?,?,?,?,?)',(project,agent,seq,'chat-discussion-bound',time.time()))
                             advanced=max(advanced,seq)
                             continue
