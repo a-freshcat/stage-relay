@@ -126,7 +126,7 @@ class Connections:
         if not valid:
             raise Invalid("当前 DSH 配置格式无法安全自动修改，未写入任何内容。请更新 DSH 后重试。")
 
-    def build(self, agent, raw, kind, remove=False):
+    def build(self, agent, raw, kind, remove=False, adopt=None):
         source = raw.decode("utf-8-sig")
         server = "stage-relay-" + agent["id"]
         entry = self.entry(agent)
@@ -138,7 +138,17 @@ class Connections:
             current = servers.get(server)
             owned = self.owned.get(agent["id"], {}).get("entry")
             if current is not None and current != owned:
-                raise Invalid("检测到同名配置已被其他操作修改，为保留现有配置，请重新核对。")
+                # An entry this panel did not write. It may be a leftover from an
+                # older build, but it is still someone else's configuration: the
+                # caller has to say which exact entry it checked. A wildcard or a
+                # blanket "yes" would make adoption indistinguishable from
+                # silently overwriting whatever is on disk.
+                if adopt is None:
+                    raise Invalid("检测到同名配置已被其他操作修改，为保留现有配置，请重新核对。")
+                if adopt.get("server") != server:
+                    raise Invalid("接管确认的条目名与目标不一致，未修改文件。")
+                if adopt.get("digest") != self.digest(json.dumps(current, sort_keys=True, ensure_ascii=False).encode("utf-8")):
+                    raise Invalid("磁盘上的同名配置与核对时不一致，请重新核对；尚未写入内容。")
             if remove:
                 servers.pop(server, None)
             else:
@@ -181,21 +191,21 @@ class Connections:
             self.validate_yaml(updated if has_rows else updated + "\n[]\n")
         return updated.encode("utf-8")
 
-    def prepare(self, agent, remove=False):
+    def prepare(self, agent, remove=False, adopt=None):
         target, kind = self.target(agent)
         # Refuse symlink redirection before accepting any configuration write.
         if target.is_symlink() or target.parent.resolve() != target.parent.absolute():
             raise Invalid("配置路径存在重定向，无法安全自动接入。")
         raw = target.read_bytes() if target.exists() else b""
         try:
-            updated = self.build(agent, raw, kind, remove)
+            updated = self.build(agent, raw, kind, remove, adopt)
         except (ValueError, UnicodeError) as exc:
             if isinstance(exc, Invalid):
                 raise
             raise Invalid("现有应用配置无法解析，未修改文件。") from None
         plan_id = secrets.token_urlsafe(24)
         self.plans = {k:v for k,v in self.plans.items() if time.time()-v["created"]<600}
-        self.plans[plan_id] = {"agent": dict(agent), "path": target, "original": raw, "updated": updated, "created": time.time(), "remove": remove, "exists": target.exists()}
+        self.plans[plan_id] = {"agent": dict(agent), "path": target, "original": raw, "updated": updated, "created": time.time(), "remove": remove, "exists": target.exists(), "adopt": adopt}
         return {"plan_id": plan_id, "agent_id": agent["id"], "app": agent["app"], "detected": target.parent.exists(), "path": str(target), "already_configured": agent["id"] in self.owned, "remove": remove, "launch_available": bool(application_target(agent["app"])),
                 "permissions": ["读取分配给此成员的任务和议题", "汇报进度、参与群聊、提交交付依据", "检测原生会话及实际模型；向你绑定的会话派发任务和协作消息" if agent['app']=='dsh' else ("启动本机 Codex 原生 harness 后台会话，沿用配置、登录及可用插件；桌面专属连接器需分别核验" if agent['app']=='codex' else "登记协作工具；此应用的原生唤醒尚未支持"), "在应用中登记本地协作工具，并备份现有配置"],
                 "notice": "配置后应用需要重新加载工具；收到应用响应前，会显示等待确认。不会替你重启正在工作的应用。"}

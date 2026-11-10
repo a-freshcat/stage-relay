@@ -132,6 +132,31 @@ class ConnectionSetup(unittest.TestCase):
         with self.assertRaises(Invalid):
             self.connections.prepare(self.anti)
 
+    def test_an_unowned_entry_is_only_replaced_with_an_exact_adoption(self):
+        """Adopting is allowed, but only for the exact entry that was inspected.
+
+        A stale bridge left behind by an older build is not something the panel
+        may overwrite on its own, and a blanket approval would be
+        indistinguishable from silently replacing whatever happens to be there.
+        """
+        import hashlib, json
+        target=self.home / ".gemini/config/mcp_config.json"
+        stale={"command":"C:/old/StageRelayBridge.exe","args":["--agent","antigravity"]}
+        self.write(target,json.dumps({"mcpServers":{"stage-relay-antigravity":stale,"other":{"command":"x"}}}))
+        digest=hashlib.sha256(json.dumps(stale,sort_keys=True,ensure_ascii=False).encode("utf-8")).hexdigest()
+        # A wrong server name is refused.
+        with self.assertRaises(Invalid):
+            self.connections.prepare(self.anti,adopt={"server":"someone-else","digest":digest})
+        # A stale digest is refused: the caller did not inspect what is on disk now.
+        with self.assertRaises(Invalid):
+            self.connections.prepare(self.anti,adopt={"server":"stage-relay-antigravity","digest":"0"*64})
+        # The exact adoption is accepted and touches only that one entry.
+        plan=self.connections.prepare(self.anti,adopt={"server":"stage-relay-antigravity","digest":digest})
+        self.connections.commit(plan["plan_id"],True)
+        after=json.loads(target.read_text(encoding="utf-8"))["mcpServers"]
+        self.assertEqual(after["other"],{"command":"x"})
+        self.assertNotEqual(after["stage-relay-antigravity"],stale)
+
     def test_malformed_config_is_not_changed(self):
         target=self.home / ".gemini/config/mcp_config.json"
         self.write(target,'{ invalid json')

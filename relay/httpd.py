@@ -410,7 +410,7 @@ class Handler(BaseHTTPRequestHandler):
                 agent = next((a for a in self.server.store.snapshot()["agents"] if a["id"] == body.get("agent_id")), None)
                 if not agent:
                     raise Invalid("成员不存在。")
-                self.json(self.server.connections.prepare(agent, remove=body.get("remove") is True))
+                self.json(self.server.connections.prepare(agent, remove=body.get("remove") is True, adopt=body.get("adopt")))
             elif path == "/api/connection/commit":
                 result = self.server.connections.commit(body.get("plan_id"), body.get("consent"))
                 self.server.store.apply("setup_record", result)
