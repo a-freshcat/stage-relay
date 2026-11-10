@@ -780,7 +780,12 @@ class Runtime:
                 # stale session can be checked against the switch it belonged to.
                 body['generation']=self._generation(db,row[1],agent)
                 db.execute("UPDATE native_jobs SET status='leased',body=?,updated=? WHERE id=?",(json.dumps(body,ensure_ascii=False),time.time(),row[0]))
-                pending.append(dict(id=row[0],session=row[2],mode='followup',**body))
+                # The delivery side needs to re-check its lease against the
+                # project and binding, and neither is inside the stored body.
+                # Without them a guard can only guess, and a missing project
+                # reads as "no project at all".
+                leased=dict(id=row[0],project=row[1],session=row[2],mode='followup',**body)
+                pending.append(leased)
             authorized_sessions=[r[1] for r in bindings]
             paused_sessions=[session for project,session in bindings if projects.get(project,{}).get('paused')]
         return dict(jobs=pending,observed_sessions=authorized_sessions,paused_sessions=paused_sessions)

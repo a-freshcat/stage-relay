@@ -1,0 +1,46 @@
+{
+ "acceptance_at_send_boundary": {
+  "problem": "accepted 在 run_job 返回后才赋值；观测期异常（如 NotSent 观测 HTTP 错误）根本到不了赋值，loop 当未发送释放 busy",
+  "fix": "run_job 新增 on_accepted 回调，send 成功即回调；_deliver 用可变容器记录 accepted，异常路径按它判断",
+  "test": "test_an_observation_error_after_acceptance_keeps_the_session_busy：真实 run_job+_deliver，send 成功后 steps 抛 NotSent → receipts=[delivered]、c1 仍在 _busy、unknown=1；镜像用例 test_a_provably_unsent_job_does_release_the_session 断言释放"
+ },
+ "job_carries_project": {
+  "problem": "runtime.poll 返回的 job 不含 project，guard 读 job[\"project\"] 得 None → 误报「项目不存在或为示例项目」，真实派发全被拒",
+  "fix": "pending 增加 project=row[1]（已注意 body 里已有 generation，改用 leased=dict(...,**body) 避免重复关键字）",
+  "test": "test_a_leased_job_carries_its_project_so_a_guard_can_check_it"
+ },
+ "session_model_from_app_record": {
+  "problem": "cascade 摘要的 trajectoryMetadata 无 model 字段，导致「缺少会话级模型名」；不得回退到 models()[0]",
+  "fix": "从该会话步骤的 metadata.modelUsage.model 取最新值（应用自己的记录），取不到返回 None",
+  "observed": "FORBIDDEN-> MODEL_PLACEHOLDER_M418"
+ },
+ "live_closure": {
+  "ls": "pid 24760, app_data_dir=antigravity, ports [63918,59571,59570], chosen 59571",
+  "session": "650c185b-2fa3-4211-9977-655df638b1e8, workspace 精确匹配, IDLE, steps 321+",
+  "path": "PanelServer -> AntigravityLoop(3s) -> Runtime.poll 租约 -> run_job 追加到既有 cascade",
+  "job": {
+   "id": "delivery_71f76db0cf46",
+   "event": 604,
+   "status": "delivered"
+  },
+  "loop_state": "{\"online\":true,\"cascades\":1,\"delivered\":1,\"timeouts\":0,\"last_error\":null,\"reason\":\"已交付并执行完成\"}",
+  "artifact": {
+   "path": "qa\\ag-native\\workspace\\current-version.txt",
+   "bytes": 8,
+   "sha256": "12fc3ce72b70dc72a7b2e9f0ee89ee87e6464ad182e84dcd10f051ef4b3b56b1",
+   "content": "v-fixed"
+  },
+  "reply": "msg antigravity | 已在项目 workspace 创建 current-version.txt…",
+  "activity_rows": 149,
+  "note": "本条为当前版本(9224661之后的修复)的面板自动派发，不是旧版实证"
+ },
+ "tests": {
+  "test_antigravity.py": "38 passed",
+  "full": "232 passed, 1 skipped",
+  "ui_probe": "ALL UI CHECKS PASSED"
+ },
+ "deferred": [
+  "新建 cascade 首轮 400 contents 仍未解决，create_session 保持拒绝",
+  "用户面板进程仍在跑旧代码，需其自行重启才能看到 loop 状态"
+ ]
+}

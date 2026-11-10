@@ -100,8 +100,12 @@ def settled(steps):
 
 
 def run_job(server, runtime, agent_id, cascade, job, plan_model, reported, guard=None,
-            steps_before=None):
+            steps_before=None, on_accepted=None):
     """Deliver one leased job to the app and report what it produced.
+
+    `on_accepted` is called the moment the app takes the message. A caller must
+    use it to record that the turn may be running, because the polling that
+    follows can fail while the app is still working.
 
     `steps_before` is the step count seen just before sending. Until a step
     appears beyond it, the trajectory still shows the previous turn, and treating
@@ -143,6 +147,12 @@ def run_job(server, runtime, agent_id, cascade, job, plan_model, reported, guard
     # Accepted by the app; from here the turn may run.
     runtime.receipt(agent_id, {"id": job["id"], "status": "delivered",
                                "detail": "Antigravity 已接受消息"})
+    if on_accepted is not None:
+        # Tell the caller at the send boundary, not on return. Everything after
+        # this point can still raise — a lost reply while reading steps, for one
+        # — and a caller that only learns on return would treat that as "nothing
+        # was sent" and give the session to a second delivery.
+        on_accepted()
 
     # The tail may still be the previous turn's message. A turn is only this
     # one's once a step appears that the earlier baseline did not have, so the

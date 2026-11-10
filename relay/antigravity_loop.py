@@ -137,8 +137,18 @@ class AntigravityLoop(threading.Thread):
 
     def _deliver(self, job):
         cascade_id = job["session"]
+        # `release` starts closed and is opened only by evidence that nothing is
+        # running. `accepted` is set by the worker the moment the app takes the
+        # message, so an exception during observation still counts as an in-flight
+        # turn rather than a failed send.
         release = False
-        accepted = False
+        accepted = [False]
+
+        def mark_accepted():
+            accepted[0] = True
+            with self._lock:
+                self._session_reason[cascade_id] = "已接受，执行中"
+
         try:
             app = self.connect()
             reported = self._reported.setdefault(cascade_id, {})
@@ -147,8 +157,8 @@ class AntigravityLoop(threading.Thread):
                 reported.setdefault(index, step.get("status"))
             outcome = run_job(app, self.panel.runtime, "antigravity", cascade_id, job,
                               self.model or self.session_model(cascade_id),
-                              reported, guard=self.guard, steps_before=len(steps_before))
-            accepted = True
+                              reported, guard=self.guard, steps_before=len(steps_before),
+                              on_accepted=mark_accepted)
             result = (outcome or {}).get("outcome")
             if result == "settled":
                 release = True
@@ -170,16 +180,13 @@ class AntigravityLoop(threading.Thread):
         except Exception as error:
             with self._lock:
                 self.state["last_error"] = str(error)
-                # Only a send that provably never reached the app leaves nothing
-                # running. After acceptance any later failure — a lost reply, a
-                # read error — leaves the turn in an unknown state, so the session
-                # stays busy and is not handed to a second delivery.
-                self._session_reason[cascade_id] = (
-                    "派发失败，未自动重发" if accepted
-                    else "发送失败，未自动重发")
-                if accepted:
+                if accepted[0]:
+                    # The app took the message, so a turn may be running. Never
+                    # release the session here and never resend automatically.
                     self.state["unknown"] = self.state.get("unknown", 0) + 1
+                    self._session_reason[cascade_id] = "已接受但结果未知，保留在途"
                 else:
+                    self._session_reason[cascade_id] = "发送失败，未自动重发"
                     release = True
         finally:
             if release:
@@ -212,20 +219,24 @@ class AntigravityLoop(threading.Thread):
         return False
 
     def session_model(self, cascade_id):
-        """The model this session is already on; never a global first entry.
+        """The model this session is actually running on; never a global guess.
 
-        Returns None when the app does not state it, so the caller reports
-        "needs a choice" instead of silently switching what runs.
+        The cascade summary carries no model field, but every step the app
+        produced records `metadata.modelUsage.model`. The newest such value is the
+        session's own model, taken from the app's own record of what it ran — not
+        from the catalogue order, which would silently switch models.
+
+        Returns None when no step reports one, so the caller reports "needs a
+        choice" instead of inventing one.
         """
         try:
-            summaries = (self.connect().call("GetAllCascadeTrajectories", {}) or {})
-            summary = (summaries.get("trajectorySummaries") or {}).get(cascade_id) or {}
+            steps = self.connect().steps(cascade_id)
         except Exception:
             return None
-        metadata = summary.get("trajectoryMetadata") or {}
-        for key in ("model", "generatorModel", "planModel"):
-            if metadata.get(key):
-                return metadata[key]
+        for step in reversed(steps):
+            usage = (step.get("metadata") or {}).get("modelUsage") or {}
+            if usage.get("model"):
+                return usage["model"]
         return None
 
     def run(self):

@@ -720,6 +720,194 @@ class ActivityMapping(unittest.TestCase):
         self.assertFalse(outcome["settled"])
         self.assertEqual(outcome["steps"], 1)
 
+    def test_an_observation_error_after_acceptance_keeps_the_session_busy(self):
+        """A read failure during observation must not look like a failed send.
+
+        The worker returns only after polling, so a caller that learns of
+        acceptance on return never sees it when the poll raises. This drives the
+        real `run_job` and the real `_deliver` together: acceptance must reach
+        `_deliver` at the send boundary, and the session must stay busy.
+        """
+        from relay.antigravity_loop import AntigravityLoop
+
+        receipts = []
+
+        class App:
+            def __init__(self):
+                self.sent = 0
+                self.reads = 0
+
+            def steps(self, cascade):
+                self.reads += 1
+                if self.sent == 0:
+                    return []              # the pre-send baseline is empty
+                # After sending, the first observation raises the same error a
+                # refused observation HTTP call raises.
+                raise NotSent("观测被拒")
+
+            def send(self, *a):
+                self.sent += 1
+
+            def models(self):
+                return [{"model": "M"}]
+
+        class Runtime:
+            def poll(self, agent, payload):
+                return {"jobs": [{"id": "d1", "session": "c1", "prompt": "go",
+                                  "project": "p1", "generation": 1}]}
+
+            def receipt(self, agent, payload):
+                receipts.append(payload["status"])
+
+            def lease(self, *a, **k):
+                return {"renewed": True}
+
+            def observe(self, *a, **k):
+                pass
+
+            def snapshot(self):
+                return {"bindings": [{"project": "p1", "agent": "antigravity",
+                                      "session": "c1", "generation": 1}]}
+
+        class Store:
+            @staticmethod
+            def snapshot():
+                return {"projects": [{"id": "p1", "demo": False, "paused": False,
+                                      "closed": False, "workspace": "W"}]}
+
+        class Panel:
+            store = Store()
+
+            def __init__(self):
+                self.runtime = Runtime()
+
+        app = App()
+
+        class Wiring(App):
+            def __init__(self, inner):
+                self.inner = inner
+
+        loop = AntigravityLoop(Panel(), port=0)
+        loop.session_model = lambda cascade_id: "M"
+        import relay.antigravity_loop as module
+        import relay.antigravity_worker as worker
+        original = module.cascades
+        module.cascades = lambda a: [{"id": "c1", "status": "CASCADE_RUN_STATUS_IDLE",
+                                      "workspace": "W"}]
+        loop.connect = lambda: app
+        original_sleep, original_max = worker.POLL_SECONDS, worker.MAX_TURN_SECONDS
+        worker.POLL_SECONDS, worker.MAX_TURN_SECONDS = 0.0, 0.5
+        try:
+            loop.tick()
+            for thread in list(loop._threads.values()):
+                thread.join(10)
+        finally:
+            module.cascades = original
+            worker.POLL_SECONDS, worker.MAX_TURN_SECONDS = original_sleep, original_max
+        self.assertEqual(receipts, ["delivered"])
+        # Accepted, then observation failed: still in flight, never released.
+        self.assertIn("c1", loop._busy, "an accepted turn must stay busy")
+        self.assertEqual(loop.snapshot()["delivered"], 0)
+        self.assertEqual(loop.snapshot().get("unknown"), 1)
+
+    def test_a_provably_unsent_job_does_release_the_session(self):
+        """The mirror case: a refusal leaves nothing running."""
+        from relay.antigravity_loop import AntigravityLoop
+
+        receipts = []
+
+        class App:
+            def steps(self, cascade):
+                return []
+
+            def send(self, *a):
+                raise NotSent("400 contents is not specified")
+
+            def models(self):
+                return [{"model": "M"}]
+
+        class Runtime:
+            def poll(self, agent, payload):
+                return {"jobs": [{"id": "d1", "session": "c1", "prompt": "go",
+                                  "project": "p1", "generation": 1}]}
+
+            def receipt(self, agent, payload):
+                receipts.append(payload["status"])
+
+            def lease(self, *a, **k):
+                return {"renewed": True}
+
+            def observe(self, *a, **k):
+                pass
+
+            def snapshot(self):
+                return {"bindings": [{"project": "p1", "agent": "antigravity",
+                                      "session": "c1", "generation": 1}]}
+
+        class Store:
+            @staticmethod
+            def snapshot():
+                return {"projects": [{"id": "p1", "demo": False, "paused": False,
+                                      "closed": False, "workspace": "W"}]}
+
+        class Panel:
+            store = Store()
+
+            def __init__(self):
+                self.runtime = Runtime()
+
+        loop = AntigravityLoop(Panel(), port=0)
+        loop.session_model = lambda cascade_id: "M"
+        import relay.antigravity_loop as module
+        original = module.cascades
+        module.cascades = lambda a: [{"id": "c1", "status": "CASCADE_RUN_STATUS_IDLE",
+                                      "workspace": "W"}]
+        loop.connect = lambda: App()
+        try:
+            loop.tick()
+            for thread in list(loop._threads.values()):
+                thread.join(10)
+        finally:
+            module.cascades = original
+        self.assertEqual(receipts, ["failed"])
+        self.assertNotIn("c1", loop._busy, "nothing is running, so release it")
+
+    def test_a_leased_job_carries_its_project_so_a_guard_can_check_it(self):
+        """Without the project a guard cannot verify the lease, only guess.
+
+        Reading `job["project"]` off the poll result used to yield None, which the
+        guard reported as "no such project" and refused every real delivery.
+        """
+        runtime = Runtime(Store(Path(tempfile.mkdtemp()) / "db.sqlite3"))
+        workspace = tempfile.mkdtemp()
+        project = runtime.store.apply("project_create", {
+            "title": "p", "goal": "g", "workspace": workspace})
+        runtime.store.apply("agent_save", {"id": "antigravity", "app": "antigravity",
+                                          "name": "Antigravity"})
+        runtime.store.apply("assign", {"project_id": project["id"],
+                                       "assignments": {"planner": "codex",
+                                                       "executor": "antigravity",
+                                                       "reporter": "codex"}})
+        issue = runtime.store.apply("issue_create", {
+            "project_id": project["id"], "title": "i", "body": "b",
+            "members": ["antigravity"], "task_ids": []}, actor="codex")
+        runtime.store.apply("message", {"project_id": project["id"],
+                                        "issue_id": issue["id"], "body": "do it",
+                                        "mentions": ["antigravity"]}, actor="codex")
+        session = "cascade-x"
+        runtime.poll("antigravity", {"app": "antigravity",
+                                     "sessions": [{"id": session, "status": "idle",
+                                                   "workspace": workspace}]})
+        runtime.bind(project["id"], "antigravity", session)
+        jobs = runtime.poll("antigravity", {"app": "antigravity",
+                                            "sessions": [{"id": session,
+                                                          "status": "idle",
+                                                          "workspace": workspace}]})["jobs"]
+        mine = [j for j in jobs if j["session"] == session]
+        self.assertTrue(mine, "the mention must lease a job")
+        self.assertEqual(mine[0]["project"], project["id"])
+        self.assertIsNotNone(mine[0].get("generation"))
+
     def test_an_unknown_step_is_still_reported(self):
         event = activity_of([{"type": "CORTEX_STEP_TYPE_SOMETHING_NEW"}])[0]
         self.assertEqual(event["type"], "step")
