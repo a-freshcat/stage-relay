@@ -39,6 +39,7 @@ TOOL_STEP = "CORTEX_STEP_TYPE_CODE_ACTION"
 ASSISTANT_STEP = "CORTEX_STEP_TYPE_PLANNER_RESPONSE"
 USER_STEP = "CORTEX_STEP_TYPE_USER_INPUT"
 ERROR_STEP = "CORTEX_STEP_TYPE_ERROR_MESSAGE"
+MCP_STEP = "CORTEX_STEP_TYPE_MCP_TOOL"
 
 
 def workspace_uri(path):
@@ -181,7 +182,31 @@ def activity_of(steps, seen=None):
         metadata = step.get("metadata") or {}
         tool = metadata.get("toolCall") or {}
         error = (step.get("errorMessage") or {}).get("error") or {}
-        if kind == TOOL_STEP and tool:
+        # An MCP call reports its failure in `error.shortError` and mirrors it in
+        # `mcpTool.resultString`; `errorMessage` is empty for these steps. Reading
+        # only the latter made a failed call look like a successful one.
+        failure = step.get("error") or {}
+        if kind == MCP_STEP:
+            call = (step.get("mcpTool") or {}).get("toolCall") or {}
+            try:
+                arguments = json.loads(call.get("argumentsJson") or "{}")
+            except ValueError:
+                arguments = {}
+            failed = step.get("status") != "CORTEX_STEP_STATUS_DONE"
+            events.append({
+                "type": "mcp/call",
+                "index": index,
+                "data": {
+                    "server": (step.get("mcpTool") or {}).get("serverName"),
+                    "tool": arguments.get("ToolName") or call.get("name"),
+                    "arguments": arguments.get("Arguments"),
+                    "status": step.get("status"),
+                    "error": (failure.get("shortError") or step.get("mcpTool", {}).get("resultString"))
+                             if failed else None,
+                    "source": metadata.get("source"),
+                },
+            })
+        elif kind == TOOL_STEP and tool:
             events.append({
                 "type": "tool/call",
                 "index": index,

@@ -84,5 +84,51 @@
   "write_proof_file": "模型读完了上下文，但没有继续执行写 mcp-proof.txt 的动作；轨迹停在 relay_rules 之后的 PLANNER_RESPONSE",
   "new_cascade_blocker": "新建 cascade 首次发送仍报 400 GenerateContentRequest.contents is not specified；只有此前成功过的 cascade 可继续追加执行",
   "interpretation": "原生 MCP 调用已成立；「MCP 回传数据后落盘」这一步未成立，不把两者混同"
+ },
+ "CORRECTION": {
+  "what_i_wrongly_reported": "上一轮把 7 条 MCP_TOOL 都当成成功调用",
+  "actual_per_step": [
+   {
+    "index": 13,
+    "tool": "relay_inbox",
+    "status": "DONE"
+   },
+   {
+    "index": 15,
+    "tool": "relay_inbox",
+    "status": "DONE"
+   },
+   {
+    "index": 19,
+    "tool": "relay_inbox",
+    "status": "DONE"
+   },
+   {
+    "index": 21,
+    "tool": "relay_inbox",
+    "status": "DONE"
+   },
+   {
+    "index": 77,
+    "tool": "relay_task",
+    "status": "ERROR",
+    "error": "你不属于此任务，无法读取。"
+   },
+   {
+    "index": 79,
+    "tool": "relay_project",
+    "status": "ERROR",
+    "error": "你不属于此项目（同类拒绝）"
+   },
+   {
+    "index": 81,
+    "tool": "relay_rules",
+    "status": "DONE"
+   }
+  ],
+  "correct_count": "5 成功（relay_inbox ×4、relay_rules）、2 失败（relay_task、relay_project）",
+  "error_field_location": "错误文本在 step.error.shortError 与 step.mcpTool.resultString，不在 errorMessage.error 里 —— 这是我没读到状态的直接原因",
+  "root_cause": "antigravity 已注册为成员，但不在任何 issue.members 里、也不是任何 task 的 owner；relay_task / relay_project 按成员资格正确拒绝",
+  "not_a_bug": "这是真实的权限语义，不是缺陷；但意味着 Antigravity 若要读任务与项目，必须被加入相应议题/任务"
  }
 }

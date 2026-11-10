@@ -6,6 +6,7 @@ real tool call. If one of these changes, the adapter silently stops working on
 the installed app, so the shape itself is the assertion.
 """
 
+import json
 import unittest
 from pathlib import Path
 
@@ -91,6 +92,45 @@ class ActivityMapping(unittest.TestCase):
         self.assertEqual(len(first), 3)
         again = activity_of(steps, seen={0, 1})
         self.assertEqual([e["index"] for e in again], [2])
+
+    def test_a_failed_mcp_call_is_reported_as_failed_with_its_reason(self):
+        """An MCP failure lives in `error.shortError`, not `errorMessage`.
+
+        Reading only `errorMessage` made these look like successful calls, which
+        is how a denied call could be reported as working.
+        """
+        steps = [{
+            "type": "CORTEX_STEP_TYPE_MCP_TOOL",
+            "status": "CORTEX_STEP_STATUS_ERROR",
+            "error": {"shortError": "你不属于此任务，无法读取。"},
+            "mcpTool": {
+                "serverName": "stage-relay-antigravity",
+                "resultString": "你不属于此任务，无法读取。",
+                "toolCall": {
+                    "name": "relay_task",
+                    "argumentsJson": json.dumps({"ToolName": "relay_task",
+                                                 "Arguments": {"project_id": "p"}}),
+                },
+            },
+        }]
+        event = activity_of(steps)[0]
+        self.assertEqual(event["type"], "mcp/call")
+        self.assertEqual(event["data"]["tool"], "relay_task")
+        self.assertEqual(event["data"]["status"], "CORTEX_STEP_STATUS_ERROR")
+        self.assertEqual(event["data"]["error"], "你不属于此任务，无法读取。")
+
+    def test_a_successful_mcp_call_has_no_error(self):
+        steps = [{
+            "type": "CORTEX_STEP_TYPE_MCP_TOOL",
+            "status": "CORTEX_STEP_STATUS_DONE",
+            "mcpTool": {
+                "serverName": "stage-relay-antigravity",
+                "toolCall": {"name": "relay_inbox", "argumentsJson": json.dumps({"ToolName": "relay_inbox"})},
+            },
+        }]
+        event = activity_of(steps)[0]
+        self.assertEqual(event["type"], "mcp/call")
+        self.assertIsNone(event["data"]["error"])
 
     def test_an_unknown_step_is_still_reported(self):
         event = activity_of([{"type": "CORTEX_STEP_TYPE_SOMETHING_NEW"}])[0]
