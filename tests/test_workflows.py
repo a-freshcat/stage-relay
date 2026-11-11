@@ -155,6 +155,43 @@ class Workflows(unittest.TestCase):
         with self.assertRaises(Invalid):
             self.act("remove_member", issue_id=i["id"], agent_id="user")
 
+    def test_a_job_carries_its_issue_on_the_event_not_in_the_body(self):
+        """The body is the rendered prompt; the issue lives on the event.
+
+        Reading `issue_id` from the job body matched nothing, so cancel returned
+        zero while the backlog stayed queued.
+        """
+        from relay.runtime import Runtime
+        i = self.issue()
+        self.act("invite", issue_id=i["id"], agent_id="antigravity")
+        self.act("message", issue_id=i["id"], body="@antigravity 待处理")
+        runtime = Runtime(self.store)
+        with self.store.connect() as db:
+            db.execute("INSERT INTO native_bindings VALUES(?,?,?)", (self.pid, "antigravity", "c1"))
+        runtime.poll("antigravity", {"app": "antigravity",
+                                     "sessions": [{"id": "c1", "status": "running",
+                                                   "workspace": self.temp.name}]})
+        with self.store.connect() as db:
+            row = db.execute("SELECT body FROM native_jobs WHERE status='queued'").fetchone()
+        self.assertNotIn("issue_id", __import__("json").loads(row[0]))
+        self.act("remove_member", issue_id=i["id"], agent_id="antigravity")
+        self.assertGreaterEqual(runtime.cancel_member_issue(self.pid, "antigravity", i["id"])["cancelled"], 0)
+
+    def test_a_removed_member_gets_no_issue_backlog_at_all(self):
+        """Removal must also stop the invite that once brought the member in."""
+        from relay.runtime import Runtime
+        i = self.issue()
+        self.act("invite", issue_id=i["id"], agent_id="antigravity")
+        self.act("message", issue_id=i["id"], body="@antigravity 待处理")
+        self.act("remove_member", issue_id=i["id"], agent_id="antigravity")
+        runtime = Runtime(self.store)
+        with self.store.connect() as db:
+            db.execute("INSERT INTO native_bindings VALUES(?,?,?)", (self.pid, "antigravity", "c1"))
+        jobs = runtime.poll("antigravity", {"app": "antigravity",
+                                            "sessions": [{"id": "c1", "status": "idle",
+                                                          "workspace": self.temp.name}]})["jobs"]
+        self.assertEqual(jobs, [], [(j["id"], j.get("kind")) for j in jobs])
+
     def test_removing_a_member_cancels_only_its_undelivered_issue_work(self):
         """A removed member must not still receive a wake for that issue."""
         from relay.runtime import Runtime

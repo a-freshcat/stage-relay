@@ -406,27 +406,47 @@ class Runtime:
     def cancel_member_issue(self, project_id, agent_id, issue_id):
         """Drop deliveries for a member that was just removed from an issue.
 
-        Only queued work is revoked. A lease already handed over is not
-        withdrawn, because the app may be acting on it and this panel cannot
-        recall that — the removal stops new work, it does not rewrite what is
-        already in flight.
+        The issue a job belongs to is recorded on the *event* that produced it, not
+        in the job body: the body is the rendered prompt. Reading `issue_id` from
+        the body therefore matched nothing and cancelled nothing, which is why a
+        removed member kept its backlog.
+
+        Only queued work is revoked. A lease already handed over is not withdrawn,
+        because the app may be acting on it and this panel cannot recall that —
+        removal stops new work, it does not rewrite what is already in flight.
         """
         cancelled = 0
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            for job_id, raw in db.execute(
-                    "SELECT id,body FROM native_jobs WHERE project=? AND agent=? AND status='queued'",
-                    (project_id, agent_id)).fetchall():
-                body = json.loads(raw)
-                if body.get('issue_id') != issue_id:
+            rows = db.execute(
+                "SELECT j.id, e.body FROM native_jobs j JOIN events e ON j.event=e.seq "
+                "WHERE j.project=? AND j.agent=? AND j.status='queued'",
+                (project_id, agent_id)).fetchall()
+            for job_id, raw in rows:
+                try:
+                    body = json.loads(raw)
+                except ValueError:
+                    continue
+                if body.get("issue_id") != issue_id:
                     continue
                 db.execute("UPDATE native_jobs SET status='cancelled',updated=? WHERE id=?",
                            (time.time(), job_id))
                 cancelled += 1
-            db.execute("DELETE FROM native_deferred WHERE project=? AND agent=? AND seq IN "
-                       "(SELECT seq FROM events WHERE kind IN ('issue_message','project_message') "
-                       "AND body LIKE ?)",
-                       (project_id, agent_id, f'%{issue_id}%'))
+            # Deferred notices are keyed by event, so remove only those whose own
+            # event names this issue; a LIKE over the payload could match a
+            # different issue whose id merely appears in the text.
+            deferred = db.execute(
+                "SELECT d.seq, e.body FROM native_deferred d JOIN events e ON d.seq=e.seq "
+                "WHERE d.project=? AND d.agent=?",
+                (project_id, agent_id)).fetchall()
+            for seq, raw in deferred:
+                try:
+                    body = json.loads(raw)
+                except ValueError:
+                    continue
+                if body.get("issue_id") == issue_id:
+                    db.execute("DELETE FROM native_deferred WHERE project=? AND agent=? AND seq=?",
+                               (project_id, agent_id, seq))
         return {'cancelled': cancelled}
 
     def reconcile(self):
@@ -592,6 +612,17 @@ class Runtime:
                     if kind=='issue_create' and any(i['id']==detail.get('issue_id') and i.get('archived') for i in p['issues']):
                         advanced=seq
                         continue
+                    # An issue's membership decides who may act in it. A member
+                    # removed from an issue must not receive its backlog — including
+                    # the invite that once brought it in — so this is checked here,
+                    # at the point events become deliveries, rather than only when a
+                    # job happens to already exist.
+                    issue_id=detail.get('issue_id')
+                    if issue_id and kind in {'message','issue_create','invite','resolve'}:
+                        issue=next((i for i in p['issues'] if i['id']==issue_id),None)
+                        if issue is None or agent not in issue.get('members',[]):
+                            advanced=seq
+                            continue
                     if kind=='project_message':
                         message_id=detail.get('message_id')
                         if message_id and any(m['id']==message_id and m.get('archived') for m in p.get('chat',[])):
