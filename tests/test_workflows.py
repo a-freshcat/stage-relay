@@ -931,6 +931,25 @@ class Workflows(unittest.TestCase):
         self.assertEqual(self.act("project_close", retention_days=7)["retention_days"], 7)
 
 
+    def test_a_project_is_retired_in_two_steps_and_can_come_back(self):
+        """The panel offers retire from the project list; the rules still gate it.
+
+        Ending is a precondition, and both steps must be real: a project that was
+        not ended cannot be forgotten, and what was forgotten must be restorable.
+        """
+        # apply() directly: act() injects the current project, and this test needs
+        # to act on a different one.
+        second = self.store.apply("project_create", {"title": "第二个项目", "goal": "g",
+                                                     "workspace": self.temp.name}, "user")
+        with self.assertRaises(Invalid):
+            self.store.apply("project_forget", {"project_id": second["id"]}, "user")
+        self.store.apply("project_close", {"project_id": second["id"]}, "user")
+        result = self.store.apply("project_forget", {"project_id": second["id"]}, "user")
+        self.assertTrue(Path(result["recover"]).exists(), "必须留下可恢复文件")
+        self.assertNotIn(second["id"], [x["id"] for x in self.store.snapshot()["projects"]])
+        self.store.apply("project_restore", {"project_id": second["id"]}, "user")
+        self.assertIn(second["id"], [x["id"] for x in self.store.snapshot()["projects"]])
+
     def test_recycling_messages_issues_and_tasks_is_recoverable(self):
         task = self.dispatched()
         issue = self.act("issue_create", "deepseek", title="多开的议题", body="误开", task_ids=[task["id"]])

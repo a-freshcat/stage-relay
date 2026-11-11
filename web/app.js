@@ -411,6 +411,42 @@ async function settingsCleanupExecute() {
   closeModal();
   toast(`已移动 ${result.moved.length} 项到 ${result.root}${result.failed.length ? `；${result.failed.length} 项失败可重试` : ''}`);
 }
+// The project list is where a user looks for a project, so the way to retire one
+// belongs there too. Ending a project is a precondition of retiring it, and making
+// the user discover that in a settings page is what made the entry look absent.
+// The two steps stay separate in the record — close then forget — so the lifecycle
+// rules still decide what may happen, and the user still confirms the removal.
+async function projectRetire(projectId) {
+  const project = state.projects.find(x => x.id === projectId);
+  if (!project) return;
+  if (project.demo) return toast('演示任务不能移入回收区；重置即可。', true);
+  const counts = `${project.tasks.length} 板块 · ${project.issues.length} 议题 · ${project.chat.length} 群聊`;
+  const step = project.closed ? 'forget' : 'close-then-forget';
+  openModal('把项目记录移入回收区', `<p class="modal-lead">「${esc(project.title)}」${project.closed ? '已结束，可以直接移入回收区。' : '还没有结束，需要先结束再移入回收区——这是两步，下面一次确认。'}</p>
+<p class="small muted">当前记录：${esc(counts)}</p>
+<div class="permissions">
+  <div class="permission">${icon('check')}<span>结束会停止派发，并把未完成板块标记为已撤销</span></div>
+  <div class="permission">${icon('file')}<span>整份记录先写入 <code>data/deleted-projects/</code>，之后可从这里移回</span></div>
+  <div class="permission">${icon('folder')}<span>项目工作区里的文件不会被删除</span></div>
+  <div class="permission">${icon('info')}<span>共享应用、插件、会话与其他项目不受影响</span></div>
+</div>
+<label class="checkbox-label"><input type="checkbox" name="confirm" required>我确认${project.closed ? '把这条项目记录移入回收区' : '先结束这条项目，再移入回收区'}（可随时移回）</label>${formActions(project.closed ? '移入回收区' : '结束并移入回收区')}`, async form => {
+    if (new FormData(form).get('confirm') !== 'on') throw new Error('请勾选确认。');
+    if (!project.closed) {
+      await mutate('project_close', {project_id: projectId});
+      const closed = state.projects.find(x => x.id === projectId);
+      if (!closed || !closed.closed) throw new Error('结束没有生效，已停止，未移入回收区。');
+    }
+    const result = await request('/api/action', {method:'POST', headers:{'Content-Type':'application/json','X-Relay-Client':'panel'}, body:JSON.stringify({action:'project_forget', args:{project_id: projectId}})});
+    state = result.state;
+    const next = state.projects.find(x => !x.demo) || state.projects[0];
+    ui.project = next.id; ui.issue = null; ui.chat = false; ui.page = 'overview';
+    localStorage.setItem('relay.project', ui.project); saveChat();
+    closeModal(); render();
+    toast(`已移入回收区；可恢复文件：${result.result.recover}`);
+  });
+}
+
 function forgetProject() {
   const p = current();
   if (p.demo) return toast('演示任务不能删除。',true);
@@ -490,7 +526,7 @@ function render() {
   if (ui.standalone) {
     $('#app').innerHTML = `<div class="layout">${chat(p) || '<div class="empty">找不到会话，请返回任务总览。</div>'}</div>`;
   } else {
-    $('#app').innerHTML = `<div class="layout"><aside class="sidebar"><div class="brand"><img src="/assets/relay.svg" alt=""><span>Stage Relay</span></div><nav class="nav" aria-label="主导航">${[['overview','任务总览','tasks'],['members','成员与分工','users'],['issues','议题群聊','chat'],['deliveries','交付记录','file'],['settings','设置与占用','layers']].map(([page,label,ico]) => `<button data-action="nav" data-page="${page}" class="${ui.page === page ? 'active' : ''}" title="${label}" ${ui.page === page ? 'aria-current="page"' : ''}>${icon(ico)}<span>${label}</span>${page === 'issues' && (openCount || mentionTotal) ? `<b class="count${mentionTotal ? ' mention' : ''}"${mentionTotal ? ` title="${mentionTotal} 条提到你的未读消息"` : ''}>${mentionTotal ? `@${mentionTotal}` : openCount}</b>` : ''}</button>`).join('')}</nav><div class="projects"><span class="eyebrow">当前项目</span>${state.projects.map(project => `<button class="project-link ${p.id === project.id ? 'active' : ''}" data-action="project" data-project="${project.id}" title="${esc(project.title)}">${icon('folder')}<span>${esc(project.title)}</span>${project.demo ? '<small class="demo-dot">演示</small>' : ''}</button>`).join('')}</div><div class="sidebar-bottom"><button class="new-project" data-action="new-project" title="新建任务">${icon('plus')}新建任务</button><div class="local-status"><i class="dot"></i>${ui.offline ? '连接中断 · 正在重试' : '本地运行 · 自动保存'}</div></div></aside><div class="shell"><header class="topbar"><span class="topbar-title">多 Agent 协作台</span><span class="top-divider"></span><span class="project-name" title="${esc(p.title)}">项目：${esc(p.title)}</span>${p.demo ? '<button class="demo-badge demo-reset" data-action="reset-demo" title="重置演示场景">演示任务 ↺</button>' : ''}<span class="spacer"></span><span class="version">Codex + DSH${state.app_version ? ` · v${esc(state.app_version)}` : ""}</span>${btn('open-project-chat',(p.chat?.length ? `项目群聊 ${p.chat.length}` : '项目群聊') + (mentionCount(p,'project') ? ` · @${mentionCount(p,'project')} 未读` : ''),'chat','ghost')}${p.closed ? `<span class="badge">已结束 · 只读</span>${!p.demo ? btn('forget-project','移入回收区','archive','ghost') : ''}` : `${btn('pause',p.paused ? '恢复派发' : '暂停全部',p.paused ? 'play' : 'pause')}${!p.demo ? btn('close-project','结束任务','check','ghost') : ''}`}<span class="user"><span class="avatar-user">我</span><span>我 · 群主</span></span></header>${ui.offline ? '<div class="offline-banner">暂时无法连接本地服务。页面内容为上次保存的数据，正在尝试恢复连接。</div>' : ''}<div class="main-frame"><main class="canvas">${ui.page === 'members' ? memberPage() : ui.page === 'issues' ? issuesPage(p) : ui.page === 'deliveries' ? deliveries(p) : ui.page === 'settings' ? settingsPage(p) : overview(p)}</main>${ui.chat ? chat(p) : ''}</div></div></div>`;
+    $('#app').innerHTML = `<div class="layout"><aside class="sidebar"><div class="brand"><img src="/assets/relay.svg" alt=""><span>Stage Relay</span></div><nav class="nav" aria-label="主导航">${[['overview','任务总览','tasks'],['members','成员与分工','users'],['issues','议题群聊','chat'],['deliveries','交付记录','file'],['settings','设置与占用','layers']].map(([page,label,ico]) => `<button data-action="nav" data-page="${page}" class="${ui.page === page ? 'active' : ''}" title="${label}" ${ui.page === page ? 'aria-current="page"' : ''}>${icon(ico)}<span>${label}</span>${page === 'issues' && (openCount || mentionTotal) ? `<b class="count${mentionTotal ? ' mention' : ''}"${mentionTotal ? ` title="${mentionTotal} 条提到你的未读消息"` : ''}>${mentionTotal ? `@${mentionTotal}` : openCount}</b>` : ''}</button>`).join('')}</nav><div class="projects"><span class="eyebrow">当前项目</span>${state.projects.map(project => `<div class="project-row"><button class="project-link ${p.id === project.id ? 'active' : ''}" data-action="project" data-project="${project.id}" title="${esc(project.title)}">${icon('folder')}<span>${esc(project.title)}</span>${project.demo ? '<small class="demo-dot">演示</small>' : ''}</button>${project.demo ? '' : `<button class="project-remove" data-action="project-retire" data-project="${project.id}" title="把这条项目记录移入回收区（可恢复）" aria-label="移入回收区">${icon('archive')}</button>`}</div>`).join('')}</div><div class="sidebar-bottom"><button class="new-project" data-action="new-project" title="新建任务">${icon('plus')}新建任务</button><div class="local-status"><i class="dot"></i>${ui.offline ? '连接中断 · 正在重试' : '本地运行 · 自动保存'}</div></div></aside><div class="shell"><header class="topbar"><span class="topbar-title">多 Agent 协作台</span><span class="top-divider"></span><span class="project-name" title="${esc(p.title)}">项目：${esc(p.title)}</span>${p.demo ? '<button class="demo-badge demo-reset" data-action="reset-demo" title="重置演示场景">演示任务 ↺</button>' : ''}<span class="spacer"></span><span class="version">Codex + DSH${state.app_version ? ` · v${esc(state.app_version)}` : ""}</span>${btn('open-project-chat',(p.chat?.length ? `项目群聊 ${p.chat.length}` : '项目群聊') + (mentionCount(p,'project') ? ` · @${mentionCount(p,'project')} 未读` : ''),'chat','ghost')}${p.closed ? `<span class="badge">已结束 · 只读</span>${!p.demo ? btn('forget-project','移入回收区','archive','ghost') : ''}` : `${btn('pause',p.paused ? '恢复派发' : '暂停全部',p.paused ? 'play' : 'pause')}${!p.demo ? btn('close-project','结束任务','check','ghost') : ''}`}<span class="user"><span class="avatar-user">我</span><span>我 · 群主</span></span></header>${ui.offline ? '<div class="offline-banner">暂时无法连接本地服务。页面内容为上次保存的数据，正在尝试恢复连接。</div>' : ''}<div class="main-frame"><main class="canvas">${ui.page === 'members' ? memberPage() : ui.page === 'issues' ? issuesPage(p) : ui.page === 'deliveries' ? deliveries(p) : ui.page === 'settings' ? settingsPage(p) : overview(p)}</main>${ui.chat ? chat(p) : ''}</div></div></div>`;
   }
   if ($('.canvas')) $('.canvas').scrollTop = oldCanvas;
   const newChat = $('#chat-scroll');
@@ -813,7 +849,7 @@ const actions = {
   'settings-refresh':refreshStorage,
   'restore-project':restoreProject,
   'settings-cleanup-execute':settingsCleanupExecute,
-  'forget-project':forgetProject,
+  'forget-project':forgetProject, 'project-retire':el=>projectRetire(el.dataset.project),
   'cleanup-preview':cleanupPreview,
   'cleanup-execute':cleanupExecute,
   'cleanup-restore':el=>cleanupRestore(el.dataset.plan),

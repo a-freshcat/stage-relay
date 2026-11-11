@@ -42,3 +42,9 @@ dialog{border:1px solid #d9dfd8;background:#fcfcfa;border-radius:14px;padding:0;
 .report-item .row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
 .report-body{white-space:pre-wrap;word-break:break-word;font:inherit;font-size:13px;line-height:1.7;margin:0;max-height:44vh;overflow:auto}
 .mention-dot{border:0;background:#c0392b;color:#fff;font-size:10px;min-width:18px;height:18px;border-radius:20px;display:grid;place-items:center;padding:0 5px;font-weight:650;cursor:pointer}.mention-dot:hover{background:#96291e}.nav .count.mention{background:#c0392b;color:#fff}.issue-card.has-mention{border-color:#e2b1aa;background:#fdf7f6}.mention-tag{font-size:9px;color:#a4362a;background:#fbe9e6;border:1px solid #f0cdc7;border-radius:4px;padding:1px 5px;white-space:nowrap}.message.mentions-user .message-text{background:#fdf3f1;box-shadow:inset 2px 0 0 #c0392b}.message.mentions-user.mention-flash .message-text{animation:mention-flash 1.4s ease-out}@keyframes mention-flash{0%{background:#fbd9d3}100%{background:#fdf3f1}}
+.project-row{display:flex;align-items:center;gap:2px}
+.project-row .project-link{flex:1;min-width:0}
+.project-remove{flex-shrink:0;border:0;background:transparent;color:#7f888b;width:26px;height:26px;display:grid;place-items:center;border-radius:6px;opacity:0;transition:opacity .12s}
+.project-row:hover .project-remove,.project-remove:focus-visible{opacity:1}
+.project-remove:hover{background:#3d4345;color:#e8e9e9}
+.project-remove .i{width:15px;height:15px}
