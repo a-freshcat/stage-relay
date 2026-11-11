@@ -225,7 +225,9 @@ function nativeActivity(agentId) {
   openModal('原生 Agent 执行记录',`<p class="modal-lead">本项目的执行会话：<code>${esc(binding?.session || '未绑定')}</code>${binding?.generation ? `（绑定轮次 ${binding.generation}）` : ''}。这是面板实际派发的原生会话，可能不是你当前正在看的那个窗口；送达回执只表示原应用收到任务，工具活动和交付依据来自实际执行。</p><div class="native-events">${events.map(e=>`<article><strong>${esc(e.type)}</strong><time>${esc(date(e.created))}</time><pre>${esc(e.data?.name || e.data?.model || e.data?.text || JSON.stringify(e.data || {}))}</pre></article>`).join('') || '<p>尚未收到原生活动。</p>'}<h3>任务与控制回执</h3>${jobs.map(j=>`<article><strong>${esc(j.detail.kind)} · ${esc(j.status)}</strong><pre>${esc(j.detail.receipt || '等待原应用确认')}</pre></article>`).join('')}</div>`);
 }
 function bindNative(agentId) {
-  if(!['dsh','codex'].includes(member(agentId)?.app)) return toast('此应用当前仅支持协作工具信箱，原生自动唤醒尚未完成。',true);
+  const app = member(agentId)?.app;
+  if(!['dsh','codex','antigravity'].includes(app)) return toast('此应用当前仅支持协作工具信箱，原生自动唤醒尚未完成。',true);
+  if(app === 'antigravity') return bindAntigravity(agentId);
   const host=state.runtime?.hosts?.find(h=>h.agent===agentId);
   if(!host?.online) return toast('原生连接尚未就绪。请先授权接入原应用，并让应用加载原生连接插件。',true);
   const sessions=host.sessions;
@@ -233,6 +235,34 @@ function bindNative(agentId) {
   openModal('绑定原生 Agent 会话',`<p class="modal-lead">请选择该项目对应的原生会话。会话工作区必须与项目一致；模型与插件由原生 harness 提供。已绑定的会话会收到面板派发；其他同工作区窗口仍可各自运行。</p><select class="input" name="native_session">${sessions.map(s=>`<option value="${esc(s.id)}" ${s.id===bound ? 'selected' : ''}>${s.id===bound ? '[本项目已绑定] ' : ''}${s.status==='running' ? '[运行中] ' : ''}${esc(s.title)} · ${esc(s.id)} · ${esc(s.model || '模型未确认')} · ${esc(s.workspace)}</option>`).join('')}</select>${btn('create-native','创建此项目的原生工作会话','plus','',`data-agent="${agentId}"`)}${formActions('确认绑定')}`,async form=>{
     await request('/api/runtime/bind',{method:'POST',headers:{'Content-Type':'application/json','X-Relay-Client':'panel'},body:JSON.stringify({project_id:current().id,agent_id:agentId,session_id:new FormData(form).get('native_session')})});
     state=await request('/api/state');closeModal();render();toast('已绑定真实会话，后续派发由原应用接收。');
+  });
+}
+// Antigravity is bound to a session that already exists in the app. There is no
+// create button: a fresh cascade rejects its first message on this install, and
+// offering a button that cannot work would be a false capability claim.
+async function bindAntigravity(agentId) {
+  let info;
+  try {
+    info = await request('/api/native/antigravity/sessions?project_id=' + encodeURIComponent(current().id));
+  } catch (error) {
+    return toast('读不到 Antigravity 会话：' + error.message, true);
+  }
+  const loop = info.loop || {};
+  if (!loop.online) {
+    return toast('Antigravity 原生应用未连接：' + (loop.reason || '未发现语言服务器'), true);
+  }
+  const sessions = info.sessions || [];
+  if (!sessions.length) {
+    return toast('Antigravity 当前没有可绑定的会话。请在应用里打开该项目的工作区并产生一轮交互后重试；此应用暂不支持由面板新建会话。', true);
+  }
+  const same = sessions.filter(s => s.same_workspace);
+  if (!same.length) {
+    return toast('Antigravity 的会话工作区与项目不一致，请先在应用里打开本项目工作区。', true);
+  }
+  const bound = state.runtime?.bindings?.find(b => b.project === current().id && b.agent === agentId)?.session;
+  openModal('绑定 Antigravity 既有会话', `<p class="modal-lead">只能选择应用里已经存在的会话，其工作区必须与项目一致。面板会向它派发任务，并在原线程回收执行结果。</p><select class="input" name="native_session">${same.map(s => `<option value="${esc(s.id)}" ${s.id === bound ? 'selected' : ''}>${s.id === bound ? '[本项目已绑定] ' : ''}${s.status === 'CASCADE_RUN_STATUS_IDLE' ? '[空闲] ' : '[运行中] '}${esc(s.title || '未命名会话')} · ${esc(s.id)} · ${esc(s.steps)} 步</option>`).join('')}</select><p class="small muted">本次不支持新建会话：新会话首轮执行会失败，这是已知缺陷。</p>${formActions('确认绑定')}`, async form => {
+    await request('/api/runtime/bind', {method:'POST', headers:{'Content-Type':'application/json','X-Relay-Client':'panel'}, body:JSON.stringify({project_id:current().id,agent_id:agentId,session_id:new FormData(form).get('native_session')})});
+    state = await request('/api/state'); closeModal(); render(); toast('已绑定既有会话，后续派发由 Antigravity 接收。');
   });
 }
 function cards(p) {

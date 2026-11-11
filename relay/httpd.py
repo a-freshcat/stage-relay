@@ -12,6 +12,7 @@ import secrets
 import socket
 import sys
 import threading
+import time
 import webbrowser
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -93,19 +94,31 @@ class PanelServer(ThreadingHTTPServer):
             threading.Thread(target=self._start_antigravity, daemon=True, name='StartAntigravity').start()
 
     def _start_antigravity(self):
-        try:
-            from .antigravity import antigravity_ports, locate
-            from .antigravity_loop import AntigravityLoop
-            port = locate(antigravity_ports())
-            if not port:
-                self.antigravity_loop = AntigravityLoop(self, 0)
-                self.antigravity_loop.state['reason'] = '未发现运行中的 Antigravity 语言服务器'
+        """Attach to the app whenever it becomes available.
+
+        The app is not necessarily running when the panel starts: measured here,
+        the language server came up 83 seconds after the panel. Trying once at
+        construction and giving up left the panel permanently without the loop,
+        and the only visible symptom was a null status. So a failed attempt is
+        retried, with the reason kept current so the status can explain itself.
+        """
+        import traceback
+        while not getattr(self, '_stop_antigravity', False):
+            try:
+                from .antigravity import antigravity_ports, locate
+                from .antigravity_loop import AntigravityLoop
+                port = locate(antigravity_ports())
+                if not port:
+                    raise Invalid('没有发现可用的 Antigravity 语言服务器端口。')
+                self.antigravity_loop = AntigravityLoop(self, port)
+                self.antigravity_error = None
+                self.antigravity_loop.start()
                 return
-            self.antigravity_loop = AntigravityLoop(self, port)
-            self.antigravity_loop.start()
-        except Exception as error:
-            self.antigravity_loop = None
-            self.antigravity_error = str(error)
+            except Exception as error:
+                self.antigravity_loop = None
+                self.antigravity_error = f"{type(error).__name__}: {error}"
+                # Wait for the app to appear; the panel must not spin on a probe.
+                time.sleep(5)
 
     def repoint_bridges(self):
         """Make already-authorized members load this package's bridge.
@@ -196,6 +209,29 @@ class Handler(BaseHTTPRequestHandler):
     server: PanelServer
     protocol_version = "HTTP/1.1"
 
+    def antigravity_sessions(self, project_id):
+        """Read-only discovery of the app's existing cascades.
+
+        Never creates one: a fresh cascade rejects its first message on this
+        install, so advertising a create path would be a capability the panel
+        does not have.
+        """
+        loop = self.server.antigravity_loop
+        if not loop:
+            raise Invalid(self.server.antigravity_error or '未发现运行中的 Antigravity 语言服务器。')
+        from .antigravity import cascades
+        found = cascades(loop.connect())
+        state = self.server.store.snapshot()
+        project = next((p for p in state["projects"] if p["id"] == project_id), None)
+        if project:
+            mine = Path(project["workspace"]).resolve()
+            for item in found:
+                item["same_workspace"] = (bool(item.get("workspace"))
+                                          and Path(item["workspace"]).resolve() == mine)
+        return {"members": [a for a in state["agents"] if a["app"] == "antigravity"],
+                "sessions": found, "loop": loop.snapshot(),
+                "create_supported": False}
+
     def log_message(self, fmt, *args):
         # Never log request bodies, cookies, tokens, or query strings.
         sys.stderr.write(f"[panel] {args[1] if len(args) > 1 else ''}\n")
@@ -278,11 +314,18 @@ class Handler(BaseHTTPRequestHandler):
                     "bridge_refresh": getattr(self.server, "bridge_refresh", []),
                     "antigravity": (self.server.antigravity_loop.snapshot()
                                     if getattr(self.server, "antigravity_loop", None) else None),
+                    # When the loop could not start at all there is no snapshot to
+                    # read, and a bare `null` tells the user nothing. Say why.
+                    "antigravity_error": getattr(self.server, "antigravity_error", None),
                 })
                 return
             if path.startswith("/api/"):
                 self.panel_auth()
                 query = parse_qs(parsed.query)
+                if path == "/api/native/antigravity/sessions":
+                    # Read-only discovery, reachable by the panel as a plain GET.
+                    self.json(self.antigravity_sessions(query.get("project_id", [None])[0]))
+                    return
                 if path == "/api/projects/recycled":
                     self.json({"projects": self.server.recycled_projects()})
                     return
@@ -427,21 +470,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == '/api/runtime/create':
                 self.json(self.server.runtime.create_session(body.get('project_id'),body.get('agent_id'),replace=body.get('replace') is True))
             elif path == '/api/native/antigravity/sessions':
-                # Discovery is read-only: it asks the app what it already has and
-                # never creates a session, because creating one is unsupported.
-                loop=self.server.antigravity_loop
-                if not loop:
-                    raise Invalid('未发现运行中的 Antigravity 语言服务器。')
-                app=loop.connect()
-                from .antigravity import cascades
-                found=cascades(app)
-                project=next((p for p in self.server.store.snapshot()['projects'] if p['id']==body.get('project_id')),None)
-                if project:
-                    mine=Path(project['workspace']).resolve()
-                    for c in found:
-                        c['same_workspace']=bool(c.get('workspace')) and Path(c['workspace']).resolve()==mine
-                self.json({'members':[a for a in self.server.store.snapshot()['agents'] if a['app']=='antigravity'],
-                           'sessions':found, 'loop':loop.snapshot()})
+                self.json(self.antigravity_sessions(body.get('project_id')))
+                return
             elif path == '/api/runtime/bind':
                 self.json(self.server.runtime.bind(body.get('project_id'),body.get('agent_id'),body.get('session_id')))
             elif path == "/api/application/open":
