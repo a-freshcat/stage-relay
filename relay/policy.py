@@ -44,28 +44,53 @@ def load(data_dir):
     return record
 
 
-def allowed_ids(data_dir):
-    """The set of permitted model ids, or an empty set when unrestricted.
+def _scope_matches(record, project):
+    """Whether a recorded restriction governs this project.
 
-    An unreadable record returns None, which callers must read as "cannot
-    confirm" — never as "everything is fine".
+    A restriction is recorded for a purpose — here, QA model checks — not for the
+    whole machine. Applying it to every project would silently bind a user's
+    ordinary sessions to a choice they made about testing only. An entry with no
+    projects listed is unscoped and governs everything, which is what an
+    explicitly global restriction means.
+    """
+    scoped = record.get("projects")
+    if not scoped:
+        return True
+    if not project:
+        return False
+    return project.get("id") in scoped
+
+
+def allowed_ids(data_dir, project=None):
+    """The set of permitted model ids for this project, or an empty set.
+
+    Returns None when the record cannot be read, which callers must treat as
+    "cannot confirm" — never as permission. A record that does not cover this
+    project contributes nothing, so an ordinary session keeps its own model.
     """
     record = load(data_dir)
     if record is None:
         return set()
     if record.get("unreadable"):
         return None
+    if not _scope_matches(record, project):
+        return set()
     return {str(m) for m in (record.get("allowed") or []) if m}
 
 
-def record(data_dir, models, source="user"):
-    """Write the restriction. `models` maps model id to the app's display name."""
+def record(data_dir, models, source="user", projects=None):
+    """Write the restriction. `models` maps model id to the app's display name.
+
+    `projects` limits it to named projects; omit it for a machine-wide rule.
+    """
     payload = {
         "allowed": sorted(models),
         "display_names": dict(models),
+        "projects": list(projects or []),
         "recorded_at": time.time(),
         "recorded_from": source,
-        "note": "面板只会向使用这些模型的会话派发；会话模型无法确认时同样拒绝。",
+        "note": ("面板只会向使用这些模型的会话派发；会话模型无法确认时同样拒绝。"
+                 "列入 projects 时仅约束这些项目，留空则约束全部。"),
     }
     target = path_for(data_dir)
     temp = target.with_suffix(".tmp")

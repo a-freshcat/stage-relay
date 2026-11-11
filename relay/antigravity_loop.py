@@ -51,6 +51,9 @@ class AntigravityLoop(threading.Thread):
         self._threads = {}
         self._session_reason = {}
         self._lock = threading.Lock()
+        # Which project the current policy question is about; set per dispatch so a
+        # project-scoped restriction cannot leak onto an ordinary session.
+        self._policy_project = None
 
     def connect(self):
         """Attach to whatever instance is listening; never start one."""
@@ -138,9 +141,14 @@ class AntigravityLoop(threading.Thread):
         if bound.get("generation") is not None and job.get("generation") is not None \
                 and bound["generation"] != job["generation"]:
             return "绑定轮次已变更，原租约不再有效"
-        return self.model_refusal(cascade_id)
+        return self.model_refusal(cascade_id, project)
 
-    def model_refusal(self, cascade_id):
+    def model_refusal(self, cascade_id, project=None):
+        """Refuse to dispatch on a model the user has ruled out."""
+        self._policy_project = project
+        return self._model_refusal(cascade_id)
+
+    def _model_refusal(self, cascade_id):
         """Refuse to dispatch on a model the user has ruled out.
 
         The panel cannot choose a session's model: it is a property of the cascade
@@ -177,7 +185,7 @@ class AntigravityLoop(threading.Thread):
         from . import policy
         store = getattr(self.panel, "store", None)
         data_dir = getattr(getattr(store, "path", None), "parent", None)
-        recorded = policy.allowed_ids(data_dir) if data_dir else set()
+        recorded = policy.allowed_ids(data_dir, self._policy_project) if data_dir else set()
         raw = os.environ.get(self.MODEL_POLICY_ENV, "").strip()
         extra = {m.strip() for m in raw.split(",") if m.strip()}
         if recorded is None:

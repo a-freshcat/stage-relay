@@ -127,6 +127,24 @@ class ModelPolicy(unittest.TestCase):
             loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M318"
             self.assertIsNone(loop.model_refusal("c1"))
 
+    def test_a_restriction_does_not_follow_a_user_into_other_projects(self):
+        """A QA-only model rule must not bind an ordinary session."""
+        from relay import policy
+        with tempfile.TemporaryDirectory() as folder:
+            policy.record(folder, {"MODEL_PLACEHOLDER_M318": "Flash"},
+                          projects=["qa-project"])
+            self.assertEqual(policy.allowed_ids(folder, {"id": "qa-project"}),
+                             {"MODEL_PLACEHOLDER_M318"})
+            self.assertEqual(policy.allowed_ids(folder, {"id": "real-project"}), set())
+
+    def test_an_unscoped_record_governs_every_project(self):
+        from relay import policy
+        with tempfile.TemporaryDirectory() as folder:
+            policy.record(folder, {"MODEL_PLACEHOLDER_M318": "Flash"})
+            self.assertEqual(policy.allowed_ids(folder, {"id": "any"}),
+                             {"MODEL_PLACEHOLDER_M318"})
+            self.assertEqual(policy.allowed_ids(folder), {"MODEL_PLACEHOLDER_M318"})
+
     def test_the_policy_is_a_set_not_a_prefix_match(self):
         loop = self.loop()
         loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M3189"
