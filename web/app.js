@@ -426,9 +426,10 @@ async function projectRetire(projectId) {
 <p class="small muted">当前记录：${esc(counts)}</p>
 <div class="permissions">
   <div class="permission">${icon('check')}<span>结束会停止派发，并把未完成板块标记为已撤销</span></div>
+  <div class="permission">${icon('chat')}<span><strong>面板创建的会话会被归档</strong>到原应用（走它自己的归档接口）；你手动绑定的会话只解除本项目的绑定，会话本身留在原应用</span></div>
   <div class="permission">${icon('file')}<span>整份记录先写入 <code>data/deleted-projects/</code>，之后可从这里移回</span></div>
   <div class="permission">${icon('folder')}<span>项目工作区里的文件不会被删除</span></div>
-  <div class="permission">${icon('info')}<span>共享应用、插件、会话与其他项目不受影响</span></div>
+  <div class="permission">${icon('info')}<span>共享应用与插件不会被关闭或卸载；其他项目不受影响</span></div>
 </div>
 <label class="checkbox-label"><input type="checkbox" name="confirm" required>我确认${project.closed ? '把这条项目记录移入回收区' : '先结束这条项目，再移入回收区'}（可随时移回）</label>${formActions(project.closed ? '移入回收区' : '结束并移入回收区')}`, async form => {
     if (new FormData(form).get('confirm') !== 'on') throw new Error('请勾选确认。');
