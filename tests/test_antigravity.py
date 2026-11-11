@@ -188,6 +188,47 @@ class ModelPolicy(unittest.TestCase):
             loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M418"
             self.assertIsNone(loop.model_refusal("c1"))
 
+    def test_interleaved_deliveries_cannot_borrow_each_others_scope(self):
+        """Two projects checked at once must each keep their own rule.
+
+        A project stashed on the instance was shared state: with several dispatch
+        threads running, an unrestricted project could overwrite the slot between
+        a QA project's check and its use, and the restriction would silently
+        vanish for that dispatch.
+        """
+        from relay import policy
+        import threading
+        with tempfile.TemporaryDirectory() as folder:
+            policy.record(folder, {"MODEL_PLACEHOLDER_M318": "Flash"}, projects=["qa"])
+            loop = self.loop()
+            loop.panel.store = type("S", (), {"path": Path(folder) / "db.sqlite3"})()
+            loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M418"
+
+            qa_result, real_result = {}, {}
+            started = threading.Barrier(2)
+
+            def qa():
+                started.wait()
+                for _ in range(200):
+                    refusal = loop.model_refusal("c1", {"id": "qa"})
+                    if refusal is None:          # would mean the scope was lost
+                        qa_result["v"] = None
+                        return
+                qa_result["v"] = refusal
+
+            def real():
+                started.wait()
+                for _ in range(200):
+                    loop.model_refusal("c2", {"id": "real"})
+                real_result["v"] = loop.model_refusal("c2", {"id": "real"})
+            threads = [threading.Thread(target=qa), threading.Thread(target=real)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(10)
+        self.assertIsNotNone(qa_result["v"], "QA 会话必须仍被限制")
+        self.assertIsNone(real_result["v"], "普通项目不应受 QA 限制影响")
+
     def test_a_restriction_does_not_follow_a_user_into_other_projects(self):
         """A QA-only model rule must not bind an ordinary session."""
         from relay import policy

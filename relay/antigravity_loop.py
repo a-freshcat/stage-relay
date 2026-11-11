@@ -57,9 +57,6 @@ class AntigravityLoop(threading.Thread):
         self._threads = {}
         self._session_reason = {}
         self._lock = threading.Lock()
-        # Which project the current policy question is about; set per dispatch so a
-        # project-scoped restriction cannot leak onto an ordinary session.
-        self._policy_project = None
 
     def connect(self):
         """Attach to whatever instance is listening; never start one."""
@@ -150,11 +147,6 @@ class AntigravityLoop(threading.Thread):
         return self.model_refusal(cascade_id, project)
 
     def model_refusal(self, cascade_id, project=None):
-        """Refuse to dispatch on a model the user has ruled out."""
-        self._policy_project = project
-        return self._model_refusal(cascade_id)
-
-    def _model_refusal(self, cascade_id):
         """Refuse to dispatch on a model the user has ruled out.
 
         The panel cannot choose a session's model: it is a property of the cascade
@@ -163,11 +155,11 @@ class AntigravityLoop(threading.Thread):
         dispatch if it is not allowed. Sending anyway would spend the quota the
         user explicitly asked to protect.
 
-        With no restriction configured this costs nothing and returns None
-        immediately: probing the app for a model nobody asked about would make
-        every dispatch depend on one more call that can fail.
+        `project` is threaded through explicitly rather than stashed on the
+        instance: several `_deliver` threads can be running at once, and a shared
+        slot would let one project's scope decide another project's dispatch.
         """
-        allowed = self.allowed_models()
+        allowed = self.allowed_models(project)
         if allowed is None:
             return "模型限制记录无法读取，不能确认真实允许范围，已拒绝派发"
         if allowed == _NOTHING_ALLOWED:
@@ -182,18 +174,18 @@ class AntigravityLoop(threading.Thread):
                     f"（{'、'.join(sorted(allowed))}），已拒绝派发")
         return None
 
-    def allowed_models(self):
-        """Models this panel may dispatch on, or an empty set for no restriction.
+    def allowed_models(self, project=None):
+        """Models this panel may dispatch on for `project`, or an empty set.
 
-        The user's restriction is standing, so it is read from the data directory
-        first; an environment variable may add to it for a single run. An
-        unreadable record yields a sentinel that makes every dispatch fail closed
-        — "cannot confirm" must never be read as "allowed".
+        Read fresh on every call: the record is a standing decision, and a caller
+        must be able to lift a restriction without this process being rebuilt. An
+        unusable record yields `None`, which makes every dispatch fail closed —
+        "cannot confirm" must never be read as "allowed".
         """
         from . import policy
         store = getattr(self.panel, "store", None)
         data_dir = getattr(getattr(store, "path", None), "parent", None)
-        recorded = policy.allowed_ids(data_dir, self._policy_project) if data_dir else set()
+        recorded = policy.allowed_ids(data_dir, project) if data_dir else set()
         raw = os.environ.get(self.MODEL_POLICY_ENV, "").strip()
         extra = {m.strip() for m in raw.split(",") if m.strip()}
         if recorded is None:
