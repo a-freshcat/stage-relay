@@ -622,7 +622,14 @@ def main():
                 f"  {running_dir}\n本次请求的是：\n  {args.data_dir}\n"
                 "请关闭那个实例，或用 --data-dir 指定同一个目录。"
             )
+        # Say plainly that this launch started nothing. Otherwise a user who just
+        # updated the code reads "already running" as "it restarted", and keeps
+        # talking to the old process while wondering why nothing changed.
         print(f"Stage Relay 已在运行：http://127.0.0.1:{args.port}", flush=True)
+        print(f"  该实例 pid {existing.get('pid')}，版本 {existing.get('version')}，"
+              f"加载的是它自己启动时的代码。", flush=True)
+        print("  本次未启动新版本；这里只是打开既有服务。", flush=True)
+        print(f"  如需加载更新的代码，请先结束 pid {existing.get('pid')} 再启动。", flush=True)
         print(describe(args.data_dir), flush=True)
         if args.open:
             webbrowser.open(f"http://127.0.0.1:{args.port}")
