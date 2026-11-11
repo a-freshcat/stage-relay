@@ -135,6 +135,64 @@ antigravity 在主项目上最近的任务保持原状（`delivered` / `coalesce
 
 ---
 
+## 六之二、重启前的 delivered 证据（补记）
+
+Codex 指出上一版记录未给出「重启前实际运行中 delivered」的完整证据，这一条成立。补上，并如实说明证据边界。
+
+### 能证明的：重启没有重发旧任务
+
+`native_jobs.updated` 是持久时间戳，重启不会重置。主项目 antigravity 的任务在重启前后分布如下：
+
+```
+重启时刻约 03:39（本地）
+  ev735  delivered   updated 15:29:47   ← 重启前，未被再次触碰
+  ev730  delivered   updated 15:27:54
+  ev616  delivered   updated 15:27:31
+  ev23/24/13/615/617/619/620/701/729  coalesced  updated 15:24:51
+```
+
+重启后新增/变化的只有三条，且都是**重启前已入队但未投递**的积压：
+
+```
+ev796  coalesced  updated 03:41:47
+ev752  delivered  updated 03:42:29
+ev815  delivered  updated 03:43:52
+```
+
+旧任务的时间戳停在 15:2x 不变 —— 若发生重发，这些行会被再次更新。
+
+### 不能证明的：重启前那一刻的 health.delivered 数值
+
+我执行前的 health 快照只记录到：
+
+```
+online False / cascades 0 / delivered 0 / busy [] / reason = 端口 61271 被拒
+```
+
+`delivered 0` 是**旧进程自启动以来**的计数，且当时 antigravity loop 离线，因此它不能说明「重启前在途投递为零」。真正的安全依据是 SQL 里的 `leased/uncertain = 无`，那条我记了，health 计数这条我没有。
+
+上一版记录把两者混着写，容易读成「health 也证实了空」。已在下方「未做的事」处标注本次不追溯补齐。
+
+---
+
+## 六之三、重启后的派发恢复（原记录未含，后续实测）
+
+部署当时 `cascades=0`，任务派发尚无法验证。随后实测：
+
+```
+LS 端口     59079 -> 62064        ← 应用自己换端口，面板自动跟随
+cascades    0 -> 1
+会话        db46248f-901d-4154-9b3c-9c99a6d3e888  RUNNING  166 steps
+health      online True / delivered 1 / timeouts 0 / reason 已连接原生应用
+busy        [db46248f-...]  sessions {db46248f-...: 已接受，执行中}
+```
+
+原生会话步数 `68 -> 198`，MCP 调用 `16 -> 20`（`relay_inbox` / `relay_task` 均 DONE）。
+
+**这一条同时是端口重发现的第二次真实验证**：LS 在部署后又换了端口（59079→62064），面板未重启、未人工干预即跟上。第一次验证是 `61271→59079`。
+
+---
+
 ## 七、回退（本轮未使用）
 
 代码可回退，**数据库不回退**：
@@ -151,6 +209,8 @@ antigravity 在主项目上最近的任务保持原状（`delivered` / `coalesce
 
 ## 八、未做的事
 
+- 未为补记录而再次重启（按 Codex #810 要求：不为补记录重启）；
+- 重启前 health 的 `delivered` 计数未留存完整快照，此为记录缺口，**本报告不追补、不推断**；
 - 未派模型任务、未消耗额度；
 - 未重发已接受或结果未知的任务；
 - 未删除任何项目或证据；
