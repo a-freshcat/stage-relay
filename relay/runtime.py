@@ -8,6 +8,11 @@ from .domain import Invalid, now, uid
 
 # A lease must outlast a turn that runs a real tool; renewing it is the
 # delivery side's job, this is only the window before a crash is assumed.
+# Kinds whose audience is decided by an issue's membership, not just by the
+# recipients stamped on the event. Named so the wake whitelist stays the one
+# obvious set of kinds in this module.
+ISSUE_SCOPED_KINDS = frozenset({"message", "issue_create", "invite", "resolve"})
+
 LEASE_SECONDS = 900
 
 
@@ -416,22 +421,44 @@ class Runtime:
         removal stops new work, it does not rewrite what is already in flight.
         """
         cancelled = 0
+        revived = 0
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             rows = db.execute(
-                "SELECT j.id, e.body FROM native_jobs j JOIN events e ON j.event=e.seq "
+                "SELECT j.id, j.event, j.body, e.body FROM native_jobs j JOIN events e ON j.event=e.seq "
                 "WHERE j.project=? AND j.agent=? AND j.status='queued'",
                 (project_id, agent_id)).fetchall()
-            for job_id, raw in rows:
+            for job_id, job_event, job_raw, raw in rows:
                 try:
                     body = json.loads(raw)
                 except ValueError:
                     continue
                 if body.get("issue_id") != issue_id:
                     continue
+                # Cancelling the head of a merged wake used to drop the events it
+                # had absorbed: they were left as `coalesced` placeholders, and the
+                # revive path in poll() only runs for a row it has loaded itself.
+                # So a legitimate survivor from another issue was lost silently.
+                # Hand back every absorbed event that still qualifies on its own,
+                # exactly as poll() does with its stale_members survivors.
+                survivors = []
+                try:
+                    merged = json.loads(job_raw).get("merged_events") or []
+                except (ValueError, AttributeError):
+                    merged = []
+                for seq in merged:
+                    if seq == job_event or not self._member_qualifies(db, project_id, agent_id, seq):
+                        continue
+                    survivors.append(seq)
                 db.execute("UPDATE native_jobs SET status='cancelled',updated=? WHERE id=?",
                            (time.time(), job_id))
                 cancelled += 1
+                for seq in survivors:
+                    # Re-check right before changing anything: the member may have
+                    # lost the other thread too, and a cancelled event must not be
+                    # handed back merely because it was in a merged tail.
+                    if self._member_qualifies(db, project_id, agent_id, seq):
+                        revived += 1 if self._revive_coalesced(db, project_id, agent_id, seq) else 0
             # Deferred notices are keyed by event, so remove only those whose own
             # event names this issue; a LIKE over the payload could match a
             # different issue whose id merely appears in the text.
@@ -447,7 +474,36 @@ class Runtime:
                 if body.get("issue_id") == issue_id:
                     db.execute("DELETE FROM native_deferred WHERE project=? AND agent=? AND seq=?",
                                (project_id, agent_id, seq))
-        return {'cancelled': cancelled}
+        return {'cancelled': cancelled, 'revived': revived}
+
+    def _member_qualifies(self, db, project_id, agent_id, seq):
+        """Whether one event still belongs to this member, on its own merits.
+
+        Used both when deciding to revive a merged tail and again just before an
+        event is handed back, so a member removed from two threads at once cannot
+        keep either one through a stale list.
+        """
+        found = db.execute('SELECT kind, body FROM events WHERE seq=?', (seq,)).fetchone()
+        if not found:
+            return False
+        kind, raw = found
+        try:
+            detail = json.loads(raw)
+        except ValueError:
+            return False
+        if agent_id not in detail.get("recipients", []):
+            return False
+        issue_id = detail.get("issue_id")
+        if not issue_id or kind not in ISSUE_SCOPED_KINDS:
+            return True
+        projects = {p["id"]: p for p in self.store.snapshot()["projects"]}
+        project = projects.get(project_id)
+        if not project:
+            return False
+        issue = next((i for i in project.get("issues", []) if i["id"] == issue_id), None)
+        if issue is None:
+            return False
+        return (not issue.get("archived")) and agent_id in issue.get("members", [])
 
     def reconcile(self):
         """Re-check registrations after a crash instead of guessing by name.
