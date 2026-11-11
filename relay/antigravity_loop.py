@@ -23,8 +23,9 @@ import os
 import threading
 import time
 
-from .antigravity import AntigravityServer, cascades, read_csrf_token
+from .antigravity import AntigravityServer, antigravity_ports, cascades, locate, read_csrf_token
 from .antigravity_worker import run_job
+from .domain import Invalid
 
 TICK = 3.0
 # A cascade may only be treated as a binding target when the app reports one of
@@ -59,8 +60,51 @@ class AntigravityLoop(threading.Thread):
         self._lock = threading.Lock()
 
     def connect(self):
-        """Attach to whatever instance is listening; never start one."""
-        return AntigravityServer(self.port, read_csrf_token(self.port, secure=False), secure=False)
+        """Attach to whatever instance is listening; never start one.
+
+        The port is re-discovered rather than remembered: the app gets a new one
+        every time it restarts, and a loop that pinned the first port it saw went
+        offline permanently with "connection refused" while the app was running
+        fine on another port. Re-discovery only happens when the remembered port
+        stops answering, so a healthy connection costs nothing extra.
+        """
+        if self.port and self._port_answers(self.port):
+            try:
+                return AntigravityServer(self.port, read_csrf_token(self.port, secure=False), secure=False)
+            except Exception:
+                # The port answered a probe but would not serve the protocol; look
+                # again rather than pinning a half-dead instance.
+                pass
+        port = locate(antigravity_ports()) if self.can_discover() else None
+        if not port:
+            raise Invalid("没有发现可用的 Antigravity 语言服务器端口。")
+        self.port = port
+        return AntigravityServer(port, read_csrf_token(port, secure=False), secure=False)
+
+    def can_discover(self):
+        """Whether this loop may go looking for the app itself.
+
+        A test constructs a loop with port 0 and its own fake server, and must not
+        reach out to a real application on the machine.
+        """
+        return self.port != 0 and getattr(self, "discovery_allowed", True)
+
+    @staticmethod
+    def _port_answers(port):
+        """Whether anything is listening on this port at all.
+
+        A plain TCP connect, deliberately separate from the token/protocol read: a
+        port that refuses the connection is gone, and no amount of retrying the
+        protocol call will bring it back. Keeping the two checks apart also means
+        the liveness question stays answerable even when the protocol step is
+        stubbed out.
+        """
+        import socket
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return True
+        except OSError:
+            return False
 
     def snapshot(self):
         snapshot = dict(self.state)

@@ -57,6 +57,56 @@ class ModelConfig(unittest.TestCase):
             AntigravityServer.config(None)
 
 
+class PortDiscovery(unittest.TestCase):
+    """The port must be re-discovered, because the app gets a new one on restart.
+
+    A loop that pinned the first port it saw stayed offline with "connection
+    refused" while the app was running normally on a different port — the status
+    said 未响应 and nothing short of restarting the panel fixed it.
+    """
+
+    def loop(self, port):
+        class Panel:
+            store = None
+            runtime = None
+        return AntigravityLoop(Panel(), port)
+
+    def test_a_dead_port_is_rediscovered(self):
+        loop = self.loop(61271)
+        with patch.object(AntigravityLoop, "_port_answers", side_effect=lambda p: p == 59079), \
+             patch("relay.antigravity_loop.locate", return_value=59079), \
+             patch("relay.antigravity_loop.antigravity_ports", return_value=[59079]), \
+             patch("relay.antigravity_loop.read_csrf_token", return_value="tok"):
+            app = loop.connect()
+        self.assertEqual(loop.port, 59079, "the loop must adopt the live port")
+        self.assertEqual(app.port, 59079)
+
+    def test_a_live_port_is_kept_without_looking_around(self):
+        loop = self.loop(59079)
+        with patch.object(AntigravityLoop, "_port_answers", return_value=True), \
+             patch("relay.antigravity_loop.read_csrf_token", return_value="tok"), \
+             patch("relay.antigravity_loop.locate") as locate_spy:
+            loop.connect()
+        self.assertEqual(loop.port, 59079)
+        locate_spy.assert_not_called()
+
+    def test_no_app_at_all_is_reported_rather_than_invented(self):
+        loop = self.loop(61271)
+        with patch.object(AntigravityLoop, "_port_answers", return_value=False), \
+             patch("relay.antigravity_loop.read_csrf_token", side_effect=OSError("refused")), \
+             patch("relay.antigravity_loop.antigravity_ports", return_value=[]), \
+             patch("relay.antigravity_loop.locate", return_value=None):
+            with self.assertRaises(Invalid) as caught:
+                loop.connect()
+        self.assertIn("端口", str(caught.exception))
+
+    def test_a_test_loop_never_reaches_for_a_real_application(self):
+        """Port 0 means "the caller supplies the server"; no probing allowed."""
+        loop = self.loop(0)
+        with patch("relay.antigravity_loop.locate") as locate_spy:
+            self.assertFalse(loop.can_discover())
+        locate_spy.assert_not_called()
+
 class ModelPolicy(unittest.TestCase):
     """A restricted model must block dispatch instead of silently spending quota.
 
