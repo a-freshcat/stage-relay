@@ -127,6 +127,67 @@ class ModelPolicy(unittest.TestCase):
             loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M318"
             self.assertIsNone(loop.model_refusal("c1"))
 
+    def test_an_environment_variable_cannot_widen_a_recorded_restriction(self):
+        """A rule the user asked for is not something env gets to override.
+
+        The union of the record and the variable let a per-run setting admit a
+        model the record had excluded — the restriction was silently gone.
+        """
+        from relay import policy
+        with tempfile.TemporaryDirectory() as folder:
+            policy.record(folder, {"MODEL_PLACEHOLDER_M318": "Flash"},
+                          projects=["qa"])
+            loop = self.loop()
+            loop.panel.store = type("S", (), {"path": Path(folder) / "db.sqlite3"})()
+            loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M418"
+            with patch.dict(os.environ, {AntigravityLoop.MODEL_POLICY_ENV:
+                                         "MODEL_PLACEHOLDER_M418"}):
+                refusal = loop.model_refusal("c1", {"id": "qa"})
+        self.assertIsNotNone(refusal, "环境变量不得放宽已记录的限制")
+
+    def test_an_environment_variable_may_only_narrow(self):
+        from relay import policy
+        with tempfile.TemporaryDirectory() as folder:
+            policy.record(folder, {"MODEL_PLACEHOLDER_M318": "Flash",
+                                   "MODEL_PLACEHOLDER_M319": "Flash"},
+                          projects=["qa"])
+            loop = self.loop()
+            loop.panel.store = type("S", (), {"path": Path(folder) / "db.sqlite3"})()
+            loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M319"
+            with patch.dict(os.environ, {AntigravityLoop.MODEL_POLICY_ENV:
+                                         "MODEL_PLACEHOLDER_M318"}):
+                refusal = loop.model_refusal("c1", {"id": "qa"})
+        self.assertIsNotNone(refusal, "收窄后 M319 应被排除")
+
+    def test_a_recorded_but_empty_allow_list_refuses(self):
+        """An empty allow-list forbids everything; it is not 'no policy'."""
+        from relay import policy
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / policy.FILENAME).write_text(
+                json.dumps({"allowed": []}), encoding="utf-8")
+            self.assertIsNone(policy.allowed_ids(folder))
+            loop = self.loop()
+            loop.panel.store = type("S", (), {"path": Path(folder) / "db.sqlite3"})()
+            loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M418"
+            refusal = loop.model_refusal("c1")
+        self.assertIn("无法读取", refusal)
+
+    def test_a_record_missing_its_allow_list_refuses(self):
+        from relay import policy
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / policy.FILENAME).write_text(
+                json.dumps({"projects": ["qa"]}), encoding="utf-8")
+            self.assertIsNone(policy.allowed_ids(folder))
+
+    def test_no_record_at_all_is_the_only_unrestricted_case(self):
+        from relay import policy
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(policy.allowed_ids(folder), set())
+            loop = self.loop()
+            loop.panel.store = type("S", (), {"path": Path(folder) / "db.sqlite3"})()
+            loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M418"
+            self.assertIsNone(loop.model_refusal("c1"))
+
     def test_a_restriction_does_not_follow_a_user_into_other_projects(self):
         """A QA-only model rule must not bind an ordinary session."""
         from relay import policy

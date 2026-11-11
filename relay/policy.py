@@ -25,22 +25,31 @@ def path_for(data_dir):
 def load(data_dir):
     """The recorded policy, or None when nothing was ever recorded.
 
-    A missing file and an unreadable file are different answers: missing means no
-    policy, unreadable means this panel cannot vouch for what is allowed and the
-    caller must treat the answer as unknown rather than as permission.
+    Three outcomes, deliberately distinct:
+
+    * `None` — no record at all. Nothing was ever decided, so no restriction
+      exists and an ordinary session keeps its own model.
+    * `{"invalid": ...}` — a record exists but cannot be trusted: bad JSON, a
+      non-object, or an `allowed` that is missing, not a list, or empty. This
+      must be read as "cannot confirm", never as permission. A file someone
+      wrote and then damaged is still evidence that a decision was made, and an
+      empty allow-list forbids everything rather than permitting it.
+    * a dict — a usable record.
     """
     target = path_for(data_dir)
     if not target.exists():
         return None
     try:
         record = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"unreadable": True, "allowed": []}
+    except (OSError, ValueError) as exc:
+        return {"invalid": f"无法解析：{exc}", "allowed": []}
     if not isinstance(record, dict):
-        return {"unreadable": True, "allowed": []}
-    allowed = record.get("allowed") or []
+        return {"invalid": "顶层不是对象", "allowed": []}
+    allowed = record.get("allowed")
     if not isinstance(allowed, list):
-        return {"unreadable": True, "allowed": []}
+        return {"invalid": "allowed 缺失或不是列表", "allowed": []}
+    if not allowed:
+        return {"invalid": "allowed 为空，未声明任何允许的模型", "allowed": []}
     return record
 
 
@@ -71,7 +80,7 @@ def allowed_ids(data_dir, project=None):
     record = load(data_dir)
     if record is None:
         return set()
-    if record.get("unreadable"):
+    if record.get("invalid"):
         return None
     if not _scope_matches(record, project):
         return set()

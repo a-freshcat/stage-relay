@@ -33,6 +33,12 @@ IDLE = "CASCADE_RUN_STATUS_IDLE"
 OBSERVE = 5.0
 
 
+# A distinct value for "a restriction is in force and admits no model".
+# An empty set already means "no restriction", so the two cannot share a
+# representation without one being read as the other.
+_NOTHING_ALLOWED = frozenset({"\x00none-allowed"})
+
+
 class AntigravityLoop(threading.Thread):
     # Names the environment variable that restricts dispatch to a set of models.
     # Empty means no policy, so nothing changes unless the user sets it.
@@ -164,6 +170,8 @@ class AntigravityLoop(threading.Thread):
         allowed = self.allowed_models()
         if allowed is None:
             return "模型限制记录无法读取，不能确认真实允许范围，已拒绝派发"
+        if allowed == _NOTHING_ALLOWED:
+            return ("模型限制与本次收窄条件没有交集，没有任何模型被允许，已拒绝派发")
         if not allowed:
             return None
         used = self.session_model(cascade_id)
@@ -190,7 +198,20 @@ class AntigravityLoop(threading.Thread):
         extra = {m.strip() for m in raw.split(",") if m.strip()}
         if recorded is None:
             return None
-        return recorded | extra
+        if not recorded:
+            # No record covers this project, so a per-run variable may set the
+            # rule. It cannot widen one that was already recorded: a restriction
+            # the user asked for is not something an environment variable gets to
+            # override.
+            return frozenset(extra) if extra else frozenset()
+        if extra:
+            # Narrowing only. An intersection cannot add a model that the record
+            # excluded; it can only remove ones it allowed. An empty intersection
+            # means the two rules admit nothing, which must forbid dispatch rather
+            # than read as "unrestricted" — the two are the same value otherwise.
+            narrowed = recorded & extra
+            return frozenset(narrowed) if narrowed else _NOTHING_ALLOWED
+        return frozenset(recorded)
 
     def _deliver(self, job):
         cascade_id = job["session"]
