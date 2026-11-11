@@ -199,5 +199,45 @@ def brief(project, agent, kind, actor, detail, seq=None):
         context["summary"] = _clip(project["summary"].get("body", ""))
     if context:
         data["context"] = context
+    reply = reply_target(project, agent, kind, detail, seq)
+    if reply:
+        data["reply"] = reply
     data["read_hint"] = "遇到事件之外的问题用 relay_project / relay_task / relay_issue / relay_message / relay_event / relay_list 按需读取全文。"
     return data
+
+
+def reply_target(project, agent, kind, detail, seq):
+    """Where this wake must be answered, when answering is required.
+
+    A native session's own output is not forwarded, so a member that finishes the
+    work and says nothing in the thread leaves the sender without an answer. The
+    wake therefore names the exact tool and thread instead of leaving it to be
+    inferred from prose — and it is only emitted when this member was addressed,
+    so an ordinary wake is not turned into an obligation to reply.
+
+    Returns None when no reply is required of this member for this event.
+    """
+    if kind not in {"message", "project_message"}:
+        return None
+    addressed = detail.get("mentions") or detail.get("recipients") or []
+    explicit = agent in addressed or detail.get("mentions_user")
+    if not explicit:
+        return None
+    if kind == "project_message":
+        return {
+            "tool": "relay_project_message",
+            "project_id": project.get("id"),
+            "trigger_event": seq,
+            "trigger_message": detail.get("message_id"),
+            "thread": "project",
+            "expectation": "处理完后回到项目群聊回复；只确认收到也要回一句。",
+        }
+    return {
+        "tool": "relay_send_message",
+        "project_id": project.get("id"),
+        "issue_id": detail.get("issue_id"),
+        "trigger_event": seq,
+        "trigger_message": detail.get("message_id"),
+        "thread": "issue",
+        "expectation": "处理完后回到这个议题回复；只确认收到也要回一句。",
+    }

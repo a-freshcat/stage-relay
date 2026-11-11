@@ -8,7 +8,11 @@ version plus the digest. A rebuilt session can therefore recover the rules
 without relying on the model's memory.
 """
 
-VERSION = "stage-relay/rules/v3"
+# v4 adds the thread-reply requirement. The version is the signal a session that
+# already holds the rules needs in order to receive the new text: `_decide_rules`
+# compares the recorded version and re-sends the full block on any change, so an
+# existing binding picks this up without being rebound.
+VERSION = "stage-relay/rules/v4"
 
 DIGEST = (
     "固定规则 {version}（完整原文随时用 relay_rules 重读；上下文压缩或会话重建后必须先重读一次）。"

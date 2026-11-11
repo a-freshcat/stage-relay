@@ -44,6 +44,75 @@ class ReplyRule(unittest.TestCase):
         text = rules.full("antigravity")
         self.assertIn("被点名不等于可以反复连发", text)
 
+class ReplyTarget(unittest.TestCase):
+    """A wake must say where to answer, but only when answering is owed."""
+
+    def project(self):
+        return {"id": "p1", "title": "t", "goal": "g", "demo": False, "paused": False,
+                "closed": False, "workspace": "W", "tasks": [], "issues": [], "chat": [],
+                "counts": {}, "assignments": {"planner": "codex", "executor": "deepseek",
+                                             "reporter": "codex"}}
+
+    def test_an_addressed_issue_message_names_the_issue_tool_and_thread(self):
+        wake = brief.brief(self.project(), "deepseek", "message", "codex",
+                           {"issue_id": "i1", "message_id": "m1",
+                            "mentions": ["deepseek"]}, seq=42)
+        reply = wake["reply"]
+        self.assertEqual(reply["tool"], "relay_send_message")
+        self.assertEqual(reply["issue_id"], "i1")
+        self.assertEqual(reply["trigger_event"], 42)
+        self.assertEqual(reply["trigger_message"], "m1")
+
+    def test_a_message_to_someone_else_creates_no_reply_obligation(self):
+        wake = brief.brief(self.project(), "deepseek", "message", "codex",
+                           {"issue_id": "i1", "message_id": "m1",
+                            "recipients": ["codex"]}, seq=43)
+        self.assertNotIn("reply", wake)
+
+    def test_an_addressed_project_message_names_the_project_tool(self):
+        wake = brief.brief(self.project(), "deepseek", "project_message", "user",
+                           {"message_id": "m2", "mentions": ["deepseek"]}, seq=44)
+        self.assertEqual(wake["reply"]["tool"], "relay_project_message")
+        self.assertNotIn("issue_id", wake["reply"])
+
+    def test_a_rules_change_reaches_a_session_that_already_holds_the_old_text(self):
+        """Without a version bump an old binding would never see the new rule."""
+        runtime = Runtime(Store(Path(tempfile.mkdtemp()) / "db.sqlite3"))
+        workspace = tempfile.mkdtemp()
+        project = runtime.store.apply("project_create", {
+            "title": "p", "goal": "g", "workspace": workspace})
+        runtime.store.apply("agent_save", {"id": "deepseek", "app": "dsh",
+                                          "name": "DSH"})
+        runtime.store.apply("assign", {"project_id": project["id"],
+                                       "assignments": {"planner": "codex",
+                                                       "executor": "deepseek",
+                                                       "reporter": "codex"}})
+        issue = runtime.store.apply("issue_create", {
+            "project_id": project["id"], "title": "i", "body": "b",
+            "members": ["deepseek"], "task_ids": []}, actor="codex")
+        runtime.store.apply("message", {"project_id": project["id"],
+                                        "issue_id": issue["id"], "body": "do it",
+                                        "mentions": ["deepseek"]}, actor="codex")
+        session = "s1"
+        payload = {"app": "dsh", "sessions": [{"id": session, "status": "idle",
+                                               "workspace": workspace}]}
+        runtime.poll("deepseek", payload)
+        runtime.bind(project["id"], "deepseek", session)
+        first = runtime.poll("deepseek", payload)["jobs"]
+        self.assertTrue(first)
+        # Pretend the session was told about an older revision of the rules.
+        with runtime.store.connect() as db:
+            db.execute("UPDATE native_rules SET rules_version='stage-relay/rules/v0' "
+                       "WHERE agent='deepseek' AND session=?", (session,))
+        runtime.store.apply("message", {"project_id": project["id"],
+                                        "issue_id": issue["id"], "body": "again",
+                                        "mentions": ["deepseek"]}, actor="codex")
+        again = runtime.poll("deepseek", payload)["jobs"]
+        self.assertTrue(again, "a new mention must wake the member")
+        prompt = again[0]["prompt"]
+        self.assertIn(rules.VERSION, prompt)
+        self.assertIn("原线程", prompt, "the full text carries the new rule")
+
 class ContextGrowth(unittest.TestCase):
     def setUp(self):
         root = Path(__file__).resolve().parent.parent / "qa"
