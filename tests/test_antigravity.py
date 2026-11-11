@@ -10,6 +10,7 @@ import io
 import json
 import tempfile
 import os
+import subprocess
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -56,6 +57,48 @@ class ModelConfig(unittest.TestCase):
         with self.assertRaises(Invalid):
             AntigravityServer.config(None)
 
+
+class DiscoveryDecoding(unittest.TestCase):
+    """A non-ASCII command line must not turn into "no app running".
+
+    With `text=True` and no encoding, Python decodes with the console code page.
+    A command line containing any non-ASCII character made the reader thread raise
+    UnicodeDecodeError, which yielded empty stdout and was swallowed — the caller
+    saw an empty port list, identical to "the app is not installed".
+    """
+
+    def test_a_non_ascii_command_line_is_read_as_utf8(self):
+        from relay import antigravity
+        payload = json.dumps([
+            {"ProcessId": 28240,
+             "CommandLine": "--app_data_dir antigravity --user 张三"},
+        ])
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout=payload, stderr="")
+        # First call lists processes, second lists the listening ports of each.
+        responses = iter([done, subprocess.CompletedProcess(args=[], returncode=0,
+                                                           stdout="59079\r\n", stderr="")])
+        with patch("subprocess.run", side_effect=lambda *a, **k: next(responses)):
+            ports = antigravity.antigravity_ports()
+        self.assertEqual(ports, [59079], "中文命令行不应让发现流程返回空")
+
+    def test_a_failed_lookup_is_reported_not_silently_empty(self):
+        from relay import antigravity
+        done = subprocess.CompletedProcess(args=[], returncode=1, stdout="",
+                                           stderr="Access denied.\r\n")
+        with patch("subprocess.run", return_value=done):
+            ports = antigravity.antigravity_ports()
+        self.assertEqual(ports, [])
+        note = antigravity.discovery_failure()
+        self.assertIn("返回码 1", note)
+        self.assertIn("Access denied", note, "真实错误必须透出，不能被吞成空列表")
+
+    def test_a_working_lookup_clears_the_previous_failure(self):
+        from relay import antigravity
+        antigravity._note_discovery_failure("stale")
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout="[]", stderr="")
+        with patch("subprocess.run", return_value=done):
+            antigravity.antigravity_ports()
+        self.assertIsNone(antigravity.discovery_failure())
 
 class PortDiscovery(unittest.TestCase):
     """The port must be re-discovered, because the app gets a new one on restart.

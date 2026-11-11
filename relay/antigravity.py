@@ -339,6 +339,46 @@ def locate(running_ports, preferred=None):
             continue
     raise Invalid("没有发现可用的 Antigravity 语言服务器端口。")
 
+# The last reason port discovery produced nothing. Kept module-level because the
+# callers that need it (a loop reporting why it is offline) run asynchronously and
+# cannot be handed an exception.
+_LAST_DISCOVERY_FAILURE = None
+
+
+def _note_discovery_failure(reason):
+    """Record why discovery failed, so "no app" can be told from "lookup broke"."""
+    global _LAST_DISCOVERY_FAILURE
+    _LAST_DISCOVERY_FAILURE = reason
+
+
+def discovery_failure():
+    return _LAST_DISCOVERY_FAILURE
+
+
+def _run_powershell(script):
+    """Run a read-only PowerShell query and return its stdout, or None on failure.
+
+    Always decoded as UTF-8: the console code page mangles any non-ASCII text and
+    the failure surfaced as an empty result rather than an error.
+    """
+    import subprocess
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError) as exc:
+        _note_discovery_failure(f"PowerShell 调用失败：{exc}")
+        return None
+    if completed.returncode != 0:
+        detail = (completed.stderr or "").strip().splitlines()
+        _note_discovery_failure(
+            f"PowerShell 返回码 {completed.returncode}："
+            f"{detail[-1] if detail else '无错误输出'}")
+        return None
+    return completed.stdout
+
+
 def antigravity_ports(app_data_dir="antigravity"):
     """Ports owned by the real language-server process, and nothing else.
 
@@ -353,13 +393,34 @@ def antigravity_ports(app_data_dir="antigravity"):
     script = ("Get-CimInstance Win32_Process -Filter \"Name='language_server.exe'\" | "
               "Select-Object ProcessId,CommandLine | ConvertTo-Json -Depth 2")
     try:
-        raw = subprocess.run(["powershell", "-NoProfile", "-Command", script],
-                             capture_output=True, text=True, timeout=30).stdout
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True, text=True, timeout=30,
+            # Decode as UTF-8 explicitly. Without it Python uses the console code
+            # page (GBK here), and any non-ASCII character in a command line makes
+            # the reader thread raise UnicodeDecodeError — which returns empty
+            # stdout and was then swallowed as "no processes found".
+            encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError) as exc:
+        _note_discovery_failure(f"无法读取语言服务器进程：{exc}")
+        return []
+    raw = completed.stdout or ""
+    if completed.returncode != 0:
+        # A failed lookup is not the same as "the app is not running", and the two
+        # produced the same empty list before. Say which one happened.
+        detail = (completed.stderr or "").strip().splitlines()
+        _note_discovery_failure(
+            f"PowerShell 读取进程失败（返回码 {completed.returncode}）："
+            f"{detail[-1] if detail else '无错误输出'}")
+        return []
+    try:
         processes = _json.loads(raw) if raw.strip() else []
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except ValueError as exc:
+        _note_discovery_failure(f"进程列表不是合法 JSON：{exc}")
         return []
     if isinstance(processes, dict):
         processes = [processes]
+    _note_discovery_failure(None)
     ports, seen = [], set()
     for process in processes:
         command = process.get("CommandLine") or ""
@@ -369,10 +430,8 @@ def antigravity_ports(app_data_dir="antigravity"):
         owned = ("Get-NetTCPConnection -State Listen -OwningProcess "
                  f"{int(process['ProcessId'])} -ErrorAction SilentlyContinue | "
                  "Select-Object -ExpandProperty LocalPort")
-        try:
-            out = subprocess.run(["powershell", "-NoProfile", "-Command", owned],
-                                 capture_output=True, text=True, timeout=30).stdout
-        except (OSError, subprocess.SubprocessError):
+        out = _run_powershell(owned)
+        if out is None:
             continue
         for token in out.split():
             if token.isdigit():
