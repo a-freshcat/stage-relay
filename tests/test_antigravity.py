@@ -100,6 +100,88 @@ class DiscoveryDecoding(unittest.TestCase):
             antigravity.antigravity_ports()
         self.assertIsNone(antigravity.discovery_failure())
 
+class DiscoveryDiagnosis(unittest.TestCase):
+    """Why the loop is offline must reach the status, and not as one vague line.
+
+    "No port found" used to cover three different situations: the app is not
+    running, the lookup itself failed (permissions, decoding, bad JSON), and a
+    language server was found but its profile is not ours. Only the first is
+    normal; the others are faults that should be visible.
+    """
+
+    def loop(self, port=61271):
+        class Panel:
+            store = None
+            runtime = None
+        return AntigravityLoop(Panel(), port)
+
+    def test_a_broken_lookup_is_shown_in_the_status(self):
+        loop = self.loop()
+        with patch.object(AntigravityLoop, "_port_answers", return_value=False), \
+             patch("relay.antigravity_loop.antigravity_ports", return_value=[]), \
+             patch("relay.antigravity.discovery_failure",
+                   return_value="PowerShell 返回码 1：Access denied"):
+            loop.tick()
+        self.assertFalse(loop.state["online"])
+        reason = loop.state["reason"]
+        self.assertIn("读取原生应用进程失败", reason)
+        self.assertIn("Access denied", reason, "真实原因必须出现在可见状态里")
+        self.assertEqual(loop.state["last_error"], reason)
+
+    def test_a_successful_look_with_no_process_says_so_plainly(self):
+        loop = self.loop()
+        with patch.object(AntigravityLoop, "_port_answers", return_value=False), \
+             patch("relay.antigravity_loop.antigravity_ports", return_value=[]), \
+             patch("relay.antigravity.discovery_failure", return_value=None):
+            loop.tick()
+        self.assertFalse(loop.state["online"])
+        self.assertIn("没有找到", loop.state["reason"])
+        self.assertNotIn("失败", loop.state["reason"], "正常的未启动不能报成故障")
+
+    def test_ports_found_but_unusable_are_distinguished(self):
+        loop = self.loop()
+        with patch.object(AntigravityLoop, "_port_answers", return_value=False), \
+             patch("relay.antigravity_loop.antigravity_ports", return_value=[59079]), \
+             patch("relay.antigravity_loop.locate", return_value=None), \
+             patch("relay.antigravity.discovery_failure", return_value=None):
+            loop.tick()
+        self.assertIn("59079", loop.state["reason"], "应指出找到了端口但不可用")
+
+    def test_the_error_never_carries_the_csrf_token(self):
+        loop = self.loop()
+        with patch.object(AntigravityLoop, "_port_answers", return_value=False), \
+             patch("relay.antigravity_loop.antigravity_ports", return_value=[]), \
+             patch("relay.antigravity.discovery_failure", return_value=None):
+            loop.tick()
+        blob = str(loop.state)
+        for leak in ("X-Codeium-Csrf-Token", "csrf", "Cookie"):
+            self.assertNotIn(leak.lower(), blob.lower())
+
+    def test_discovery_is_not_rerun_every_tick(self):
+        """An offline loop ticks every few seconds; each try spawns PowerShell."""
+        loop = self.loop()
+        with patch.object(AntigravityLoop, "_port_answers", return_value=False), \
+             patch("relay.antigravity_loop.antigravity_ports", return_value=[]) as ports, \
+             patch("relay.antigravity.discovery_failure", return_value=None):
+            loop.tick()
+            first = ports.call_count
+            loop.tick()
+            loop.tick()
+            self.assertEqual(ports.call_count, first, "冷却期内不应再次探测")
+            # The cause stays visible during the cooldown, with the wait appended.
+            self.assertIn("重新探测", loop.state["reason"])
+            self.assertIn("没有找到", loop.state["reason"])
+
+    def test_the_first_attempt_after_a_failure_is_immediate(self):
+        """Cooldown must not delay noticing that the app came back."""
+        loop = self.loop()
+        loop._next_discovery_at = 0.0
+        with patch.object(AntigravityLoop, "_port_answers", return_value=False), \
+             patch("relay.antigravity_loop.antigravity_ports", return_value=[]) as ports, \
+             patch("relay.antigravity.discovery_failure", return_value=None):
+            loop.tick()
+        self.assertEqual(ports.call_count, 1)
+
 class PortDiscovery(unittest.TestCase):
     """The port must be re-discovered, because the app gets a new one on restart.
 
@@ -141,7 +223,9 @@ class PortDiscovery(unittest.TestCase):
              patch("relay.antigravity_loop.locate", return_value=None):
             with self.assertRaises(Invalid) as caught:
                 loop.connect()
-        self.assertIn("端口", str(caught.exception))
+        # The message must say the lookup succeeded and found nothing, which is a
+        # different fact from the lookup itself failing.
+        self.assertIn("没有找到", str(caught.exception))
 
     def test_a_test_loop_never_reaches_for_a_real_application(self):
         """Port 0 means "the caller supplies the server"; no probing allowed."""

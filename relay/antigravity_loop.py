@@ -41,6 +41,9 @@ _NOTHING_ALLOWED = frozenset({"\x00none-allowed"})
 
 
 class AntigravityLoop(threading.Thread):
+    # Seconds between port re-discovery attempts while the app is unreachable.
+    DISCOVERY_COOLDOWN = 10.0
+
     # Names the environment variable that restricts dispatch to a set of models.
     # Empty means no policy, so nothing changes unless the user sets it.
     MODEL_POLICY_ENV = "STAGE_RELAY_ANTIGRAVITY_MODELS"
@@ -58,6 +61,10 @@ class AntigravityLoop(threading.Thread):
         self._threads = {}
         self._session_reason = {}
         self._lock = threading.Lock()
+        # Discovery is throttled and its failure is kept verbatim, so the status
+        # can distinguish "the app is not running" from "the lookup broke".
+        self._next_discovery_at = 0.0
+        self._discovery_reason = None
 
     def connect(self):
         """Attach to whatever instance is listening; never start one.
@@ -75,9 +82,45 @@ class AntigravityLoop(threading.Thread):
                 # The port answered a probe but would not serve the protocol; look
                 # again rather than pinning a half-dead instance.
                 pass
-        port = locate(antigravity_ports()) if self.can_discover() else None
-        if not port:
+        if not self.can_discover():
             raise Invalid("没有发现可用的 Antigravity 语言服务器端口。")
+        # A loop that is offline ticks every few seconds, and each discovery runs
+        # PowerShell. Back off between attempts so an app that stays closed does
+        # not cost a process spawn per tick. The first attempt after a failure is
+        # always immediate, so a restart is still noticed within one tick.
+        now = time.time()
+        if now < self._next_discovery_at:
+            # Keep the cause visible while waiting; a bare "trying again" would
+            # throw away the one piece of information the status exists for.
+            wait = int(self._next_discovery_at - now) + 1
+            if self._discovery_reason:
+                raise Invalid(f"{self._discovery_reason}（{wait} 秒后重新探测）")
+            raise Invalid(f"正在等待重新探测原生应用（{wait} 秒后）。")
+        self._next_discovery_at = now + self.DISCOVERY_COOLDOWN
+        found = antigravity_ports()
+        from . import antigravity as _antigravity
+        failure = _antigravity.discovery_failure()
+        if failure:
+            # The lookup itself broke (permissions, a decode error, bad JSON). That
+            # is a different fact from "the app is not running", and reporting both
+            # as "no port found" hid the real cause.
+            self._discovery_reason = f"读取原生应用进程失败：{failure}"
+            raise Invalid(self._discovery_reason)
+        try:
+            port = locate(found)
+        except Invalid:
+            # locate() raises rather than returning None: a successful look that
+            # yields nothing usable is still not a lookup failure.
+            port = None
+        if not port:
+            # A successful look that found nothing: either no language server, or
+            # one whose profile is not ours.
+            self._discovery_reason = (
+                "查询成功，但没有找到使用该 profile 的 Antigravity 语言服务器"
+                if not found else
+                f"找到语言服务器监听端口 {found}，但都不提供可用的 CSRF 页面")
+            raise Invalid(self._discovery_reason)
+        self._discovery_reason = None
         self.port = port
         return AntigravityServer(port, read_csrf_token(port, secure=False), secure=False)
 
@@ -141,9 +184,14 @@ class AntigravityLoop(threading.Thread):
             app = self.connect()
             hosted = cascades(app)
         except Exception as error:  # the app may simply not be running
-            self.state.update(online=False, reason=f"原生应用未响应：{error}")
+            # connect() already composes the specific message, including the cooldown
+            # countdown; fall back to the recorded reason only if it did not.
+            detail = str(error) or self._discovery_reason
+            self.state.update(online=False, reason=detail)
+            self.state["last_error"] = detail
             return
         self.state.update(online=True, cascades=len(hosted), reason="已连接原生应用")
+        self.state["last_error"] = None
 
         leased = self.advertise(hosted)
         jobs = leased.get("jobs") or []
