@@ -19,6 +19,7 @@ alternative lies:
 * the model is the session's own; a guess would silently switch what runs.
 """
 
+import os
 import threading
 import time
 
@@ -33,6 +34,10 @@ OBSERVE = 5.0
 
 
 class AntigravityLoop(threading.Thread):
+    # Names the environment variable that restricts dispatch to a set of models.
+    # Empty means no policy, so nothing changes unless the user sets it.
+    MODEL_POLICY_ENV = "STAGE_RELAY_ANTIGRAVITY_MODELS"
+
     def __init__(self, server, port, model=None):
         super().__init__(daemon=True, name="AntigravityLoop")
         self.panel = server
@@ -133,7 +138,40 @@ class AntigravityLoop(threading.Thread):
         if bound.get("generation") is not None and job.get("generation") is not None \
                 and bound["generation"] != job["generation"]:
             return "绑定轮次已变更，原租约不再有效"
+        return self.model_refusal(cascade_id)
+
+    def model_refusal(self, cascade_id):
+        """Refuse to dispatch on a model the user has ruled out.
+
+        The panel cannot choose a session's model: it is a property of the cascade
+        the user opened. So a restriction has to be enforced as a precondition —
+        read the model the app itself recorded for this session and decline the
+        dispatch if it is not allowed. Sending anyway would spend the quota the
+        user explicitly asked to protect.
+
+        With no restriction configured this costs nothing and returns None
+        immediately: probing the app for a model nobody asked about would make
+        every dispatch depend on one more call that can fail.
+        """
+        allowed = self.allowed_models()
+        if not allowed:
+            return None
+        used = self.session_model(cascade_id)
+        if not used:
+            return "会话尚未记录所用模型，无法确认是否符合用户的模型限制"
+        if used not in allowed:
+            return (f"会话所用模型 {used} 不在用户允许的范围内"
+                    f"（{'、'.join(sorted(allowed))}），已拒绝派发")
         return None
+
+    def allowed_models(self):
+        """Models the user restricted dispatch to, or empty for no restriction.
+
+        Kept as a plain set so a restriction can be lifted without a restart of
+        anything else; an empty set means no policy is in force.
+        """
+        raw = os.environ.get(self.MODEL_POLICY_ENV, "").strip()
+        return {m.strip() for m in raw.split(",") if m.strip()}
 
     def _deliver(self, job):
         cascade_id = job["session"]

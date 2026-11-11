@@ -9,9 +9,12 @@ the installed app, so the shape itself is the assertion.
 import io
 import json
 import tempfile
+import os
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
+from relay.antigravity_loop import AntigravityLoop
 from relay.antigravity_worker import observe_steps, run_job, settled
 from relay.runtime import Runtime
 from relay.domain import Store, Invalid
@@ -53,6 +56,51 @@ class ModelConfig(unittest.TestCase):
         with self.assertRaises(Invalid):
             AntigravityServer.config(None)
 
+
+class ModelPolicy(unittest.TestCase):
+    """A restricted model must block dispatch instead of silently spending quota.
+
+    The panel cannot pick a cascade's model, so the only honest enforcement is to
+    read the model the app recorded and refuse when it is not allowed.
+    """
+
+    def loop(self):
+        class Panel:
+            pass
+        return AntigravityLoop(Panel(), 0)
+
+    def test_without_a_policy_nothing_is_refused(self):
+        loop = self.loop()
+        self.assertEqual(loop.allowed_models(), set())
+        self.assertIsNone(loop.model_refusal("c1"))
+
+    def test_a_permitted_model_passes(self):
+        loop = self.loop()
+        loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M318"
+        with patch.dict(os.environ, {AntigravityLoop.MODEL_POLICY_ENV: "MODEL_PLACEHOLDER_M318"}):
+            self.assertIsNone(loop.model_refusal("c1"))
+
+    def test_a_forbidden_model_is_refused_and_named(self):
+        loop = self.loop()
+        loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M418"
+        with patch.dict(os.environ, {AntigravityLoop.MODEL_POLICY_ENV: "MODEL_PLACEHOLDER_M318"}):
+            refusal = loop.model_refusal("c1")
+        self.assertIn("MODEL_PLACEHOLDER_M418", refusal)
+        self.assertIn("MODEL_PLACEHOLDER_M318", refusal)
+
+    def test_an_unrecorded_model_is_refused_rather_than_assumed(self):
+        """Not knowing the model is not the same as knowing it is allowed."""
+        loop = self.loop()
+        loop.session_model = lambda cascade_id: None
+        with patch.dict(os.environ, {AntigravityLoop.MODEL_POLICY_ENV: "MODEL_PLACEHOLDER_M318"}):
+            refusal = loop.model_refusal("c1")
+        self.assertIn("无法确认", refusal)
+
+    def test_the_policy_is_a_set_not_a_prefix_match(self):
+        loop = self.loop()
+        loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M3189"
+        with patch.dict(os.environ, {AntigravityLoop.MODEL_POLICY_ENV: "MODEL_PLACEHOLDER_M318"}):
+            self.assertIsNotNone(loop.model_refusal("c1"))
 
 class ActivityMapping(unittest.TestCase):
     def test_a_real_tool_call_is_reported_with_its_arguments(self):
