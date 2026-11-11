@@ -437,7 +437,20 @@ async function projectRetire(projectId) {
       const closed = state.projects.find(x => x.id === projectId);
       if (!closed || !closed.closed) throw new Error('结束没有生效，已停止，未移入回收区。');
     }
-    const result = await request('/api/action', {method:'POST', headers:{'Content-Type':'application/json','X-Relay-Client':'panel'}, body:JSON.stringify({action:'project_forget', args:{project_id: projectId}})});
+    let result;
+    try {
+      result = await request('/api/action', {method:'POST', headers:{'Content-Type':'application/json','X-Relay-Client':'panel'}, body:JSON.stringify({action:'project_forget', args:{project_id: projectId}})});
+    } catch (error) {
+      // The project really was ended, and that is not undone here. Report the
+      // state that actually holds and leave the recovery step retryable, rather
+      // than implying the whole operation failed or silently reopening it.
+      state = await request('/api/state');
+      render();
+      const now = state.projects.find(x => x.id === projectId);
+      toast(`项目已结束（停止派发、未完成板块已撤销），但移入回收区失败：${error.message}` +
+            (now && now.closed ? ' 可从项目列表再次回收这一步。' : ''), true);
+      throw error;
+    }
     state = result.state;
     const next = state.projects.find(x => !x.demo) || state.projects[0];
     ui.project = next.id; ui.issue = null; ui.chat = false; ui.page = 'overview';

@@ -950,6 +950,23 @@ class Workflows(unittest.TestCase):
         self.store.apply("project_restore", {"project_id": second["id"]}, "user")
         self.assertIn(second["id"], [x["id"] for x in self.store.snapshot()["projects"]])
 
+    def test_a_closed_project_can_still_be_retired_after_a_failed_attempt(self):
+        """Ending is its own committed step; a failed removal must not undo it.
+
+        The panel reports the real state after such a failure and offers the
+        removal again, so forgetting has to be possible on an already-closed
+        project rather than requiring a reopen first.
+        """
+        second = self.store.apply("project_create", {"title": "待回收", "goal": "g",
+                                                     "workspace": self.temp.name}, "user")
+        self.store.apply("project_close", {"project_id": second["id"]}, "user")
+        closed = next(x for x in self.store.snapshot()["projects"] if x["id"] == second["id"])
+        self.assertTrue(closed["closed"])
+        # The retry must not require reopening.
+        result = self.store.apply("project_forget", {"project_id": second["id"]}, "user")
+        self.assertEqual(result["deleted"], second["id"])
+        self.assertTrue(Path(result["recover"]).exists())
+
     def test_recycling_messages_issues_and_tasks_is_recoverable(self):
         task = self.dispatched()
         issue = self.act("issue_create", "deepseek", title="多开的议题", body="误开", task_ids=[task["id"]])
