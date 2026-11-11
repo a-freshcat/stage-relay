@@ -208,8 +208,10 @@ class Workflows(unittest.TestCase):
         self.act("invite", issue_id=other["id"], agent_id="antigravity")
         self.act("message", issue_id=other["id"], body="@antigravity REVOKED_SECRET")
         runtime = Runtime(self.store)
+        # Idempotent: a subclass's setUp may have bound this member already.
         with self.store.connect() as db:
-            db.execute("INSERT INTO native_bindings VALUES(?,?,?)", (self.pid, "antigravity", "c1"))
+            db.execute("INSERT OR REPLACE INTO native_bindings VALUES(?,?,?)",
+                       (self.pid, "antigravity", "c1"))
         payload = {"app": "antigravity", "sessions": [{"id": "c1", "status": "running",
                                                        "workspace": self.temp.name}]}
         runtime.poll("antigravity", payload)
