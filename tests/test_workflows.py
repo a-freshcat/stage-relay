@@ -192,6 +192,37 @@ class Workflows(unittest.TestCase):
                                                           "workspace": self.temp.name}]})["jobs"]
         self.assertEqual(jobs, [], [(j["id"], j.get("kind")) for j in jobs])
 
+    def test_a_merged_wake_drops_a_removed_issues_text_but_keeps_the_rest(self):
+        """A coalesced wake must be re-filtered member by member, not only at its head.
+
+        Only the head event was checked, so a removed issue's text rode along in a
+        merged wake and the member saw a thread it no longer belonged to.
+        """
+        from relay.runtime import Runtime
+        kept = self.issue()
+        other = self.issue()
+        # Both threads must address the same member, otherwise there is nothing to
+        # merge and the test would pass without exercising the filter.
+        self.act("invite", issue_id=kept["id"], agent_id="antigravity")
+        self.act("message", issue_id=kept["id"], body="@antigravity 保留的议题需处理")
+        self.act("invite", issue_id=other["id"], agent_id="antigravity")
+        self.act("message", issue_id=other["id"], body="@antigravity REVOKED_SECRET")
+        runtime = Runtime(self.store)
+        with self.store.connect() as db:
+            db.execute("INSERT INTO native_bindings VALUES(?,?,?)", (self.pid, "antigravity", "c1"))
+        payload = {"app": "antigravity", "sessions": [{"id": "c1", "status": "running",
+                                                       "workspace": self.temp.name}]}
+        runtime.poll("antigravity", payload)
+        self.act("remove_member", issue_id=other["id"], agent_id="antigravity")
+        runtime.cancel_member_issue(self.pid, "antigravity", other["id"])
+        idle = {"app": "antigravity", "sessions": [{"id": "c1", "status": "idle",
+                                                    "workspace": self.temp.name}]}
+        jobs = runtime.poll("antigravity", idle)["jobs"]
+        self.assertTrue(jobs, "保留的议题仍应收到通知")
+        for job in jobs:
+            self.assertNotIn("REVOKED_SECRET", job.get("prompt", ""),
+                             "被移除议题的内容不应留在合并唤醒里")
+
     def test_removing_a_member_cancels_only_its_undelivered_issue_work(self):
         """A removed member must not still receive a wake for that issue."""
         from relay.runtime import Runtime

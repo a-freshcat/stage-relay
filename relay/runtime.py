@@ -784,7 +784,14 @@ class Runtime:
                     check_message=next((m for m in thread if m['id']==check_detail.get('message_id')),None)
                     if ((check_task is not None and check_task.get('archived') and check_kind=='task_queued')
                             or (check_issue is not None and check_issue.get('archived'))
-                            or (check_message is not None and check_message.get('archived'))):
+                            or (check_message is not None and check_message.get('archived'))
+                            # Membership, not only archival: an issue that lost this
+                            # member must drop out of a wake the same way a recycled
+                            # one does. Without this, a merged wake kept carrying the
+                            # removed issue's text — the member saw content from a
+                            # thread it had just been removed from.
+                            or (check_issue is not None and agent not in check_issue.get('members', []))
+                            or (check_issue is None and check_detail.get('issue_id') and check_kind in {'message','issue_create','invite','resolve'})):
                         stale_members.append(check_seq)
                 if stale_members:
                     remaining=[seq for seq in wake_seqs if seq not in stale_members]
