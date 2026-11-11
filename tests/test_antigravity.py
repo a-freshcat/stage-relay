@@ -96,6 +96,37 @@ class ModelPolicy(unittest.TestCase):
             refusal = loop.model_refusal("c1")
         self.assertIn("无法确认", refusal)
 
+    def test_a_recorded_restriction_survives_the_process(self):
+        """The restriction is standing, so it cannot live only in an env var."""
+        from relay import policy
+        with tempfile.TemporaryDirectory() as folder:
+            policy.record(folder, {"MODEL_PLACEHOLDER_M318": "Gemini 3.8 Flash (High)"})
+            self.assertEqual(policy.allowed_ids(folder), {"MODEL_PLACEHOLDER_M318"})
+
+    def test_an_unreadable_record_refuses_instead_of_allowing(self):
+        """A damaged policy file must fail closed, not open."""
+        from relay import policy
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / policy.FILENAME).write_text("{not json", encoding="utf-8")
+            self.assertIsNone(policy.allowed_ids(folder))
+            loop = self.loop()
+            loop.panel.store = type("S", (), {"path": Path(folder) / "db.sqlite3"})()
+            loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M318"
+            refusal = loop.model_refusal("c1")
+        self.assertIn("无法读取", refusal)
+
+    def test_a_recorded_policy_is_read_from_the_data_directory(self):
+        from relay import policy
+        with tempfile.TemporaryDirectory() as folder:
+            policy.record(folder, {"MODEL_PLACEHOLDER_M318": "Gemini 3.8 Flash (High)"})
+            loop = self.loop()
+            loop.panel.store = type("S", (), {"path": Path(folder) / "db.sqlite3"})()
+            loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M418"
+            refusal = loop.model_refusal("c1")
+            self.assertIn("MODEL_PLACEHOLDER_M418", refusal)
+            loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M318"
+            self.assertIsNone(loop.model_refusal("c1"))
+
     def test_the_policy_is_a_set_not_a_prefix_match(self):
         loop = self.loop()
         loop.session_model = lambda cascade_id: "MODEL_PLACEHOLDER_M3189"

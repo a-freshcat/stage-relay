@@ -154,6 +154,8 @@ class AntigravityLoop(threading.Thread):
         every dispatch depend on one more call that can fail.
         """
         allowed = self.allowed_models()
+        if allowed is None:
+            return "模型限制记录无法读取，不能确认真实允许范围，已拒绝派发"
         if not allowed:
             return None
         used = self.session_model(cascade_id)
@@ -165,13 +167,22 @@ class AntigravityLoop(threading.Thread):
         return None
 
     def allowed_models(self):
-        """Models the user restricted dispatch to, or empty for no restriction.
+        """Models this panel may dispatch on, or an empty set for no restriction.
 
-        Kept as a plain set so a restriction can be lifted without a restart of
-        anything else; an empty set means no policy is in force.
+        The user's restriction is standing, so it is read from the data directory
+        first; an environment variable may add to it for a single run. An
+        unreadable record yields a sentinel that makes every dispatch fail closed
+        — "cannot confirm" must never be read as "allowed".
         """
+        from . import policy
+        store = getattr(self.panel, "store", None)
+        data_dir = getattr(getattr(store, "path", None), "parent", None)
+        recorded = policy.allowed_ids(data_dir) if data_dir else set()
         raw = os.environ.get(self.MODEL_POLICY_ENV, "").strip()
-        return {m.strip() for m in raw.split(",") if m.strip()}
+        extra = {m.strip() for m in raw.split(",") if m.strip()}
+        if recorded is None:
+            return None
+        return recorded | extra
 
     def _deliver(self, job):
         cascade_id = job["session"]
