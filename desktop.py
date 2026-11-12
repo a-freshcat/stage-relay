@@ -28,6 +28,51 @@ class DesktopAPI:
         return str(Path(chosen[0]).resolve()) if chosen else None
 
 
+def decide_occupied_port(health, port, version, data_dir):
+    """What to do when the port is already held, given the holder's health.
+
+    Returns None when this launch should attach to the running instance, or the
+    message explaining why it cannot. Kept separate from main() so the decision can
+    be checked without a window, a mutex, or a file handle — the three things that
+    made this hard to test in place.
+
+    Attaching is the normal case: double-clicking the app while it is running must
+    open the window that is already serving, not refuse. A refusal is correct only
+    when the other instance is a different build or serves a different store,
+    because then this process could not honour either.
+    """
+    running_dir = health.get("data_dir")
+    same_dir = bool(running_dir) and Path(running_dir).resolve() == Path(data_dir).resolve()
+    same_version = health.get("version") == version
+    is_us = health.get("app") == "stage-relay"
+
+    # "Attach" is only ever right for our own app. A different program that happens
+    # to report the same version and directory must not be opened as if it were us.
+    if is_us and same_version and same_dir:
+        return None
+
+    if not is_us:
+        return (f'端口 {port} 被其他应用占用（app={health.get("app")!r}）。\n\n'
+                f'本次版本：{version}')
+
+    return (
+        f'端口 {port} 已被另一个 Stage Relay 实例占用。\n\n'
+        f'正在运行：\n'
+        f'  版本     {health.get("version")}\n'
+        f'  PID      {health.get("pid")}\n'
+        f'  端口     {port}\n'
+        f'  数据目录 {running_dir}\n\n'
+        f'本次启动：\n'
+        f'  版本     {version}\n'
+        f'  端口     {port}\n'
+        f'  数据目录 {data_dir}\n\n'
+        + ('两个实例的数据目录不同，同一个端口只能服务一份数据。\n'
+           if not same_dir else
+           '正在运行的是另一个版本，本次无法接管它的端口。\n')
+        + '请先关闭上面列出的那个实例再启动本次版本；任务和文件都会保留。\n'
+          '本应用不会自动结束它。')
+
+
 def main():
     if '--codex-native-worker' in sys.argv:
         from relay.codex_worker import main as native_worker
@@ -85,10 +130,10 @@ def main():
         try:
             server = PanelServer(("127.0.0.1",args.port),store,connection_home=args.app_home)
         except OSError:
-            # The port is taken. Find out by what before saying anything: the old
-            # message said "close the old version" without naming it, so a user who
-            # had just installed a new build had no way to tell which window, process
-            # or data directory was in the way.
+            # The port is taken. Decide what that means before saying anything: the
+            # old message said "close the old version" without naming it, so a user
+            # who had just installed a new build could not tell which instance held
+            # the port, and the catch-all then blamed WebView2 as well.
             try:
                 with urlopen(url + "/api/health",timeout=3) as response:
                     health=json.load(response)
@@ -97,23 +142,15 @@ def main():
                     f'端口 {args.port} 已被占用，但无法读取它的健康信息（{error}）。\n'
                     f'占用者不是本应用的正常实例，或正在启动中。\n\n'
                     f'本次版本：{__version__}\n本次数据目录：{args.data_dir}') from error
-            if health.get("app") != "stage-relay":
-                raise RuntimeError(
-                    f'端口 {args.port} 被其他应用占用（app={health.get("app")!r}）。\n\n'
-                    f'本次版本：{__version__}')
-            raise RuntimeError(
-                f'端口 {args.port} 已被另一个 Stage Relay 实例占用。\n\n'
-                f'正在运行：\n'
-                f'  版本     {health.get("version")}\n'
-                f'  PID      {health.get("pid")}\n'
-                f'  端口     {args.port}\n'
-                f'  数据目录 {health.get("data_dir")}\n\n'
-                f'本次启动：\n'
-                f'  版本     {__version__}\n'
-                f'  端口     {args.port}\n'
-                f'  数据目录 {args.data_dir}\n\n'
-                f'请先关闭上面列出的那个实例再启动本次版本；任务和文件都会保留。\n'
-                f'本应用不会自动结束它。')
+            decision = decide_occupied_port(health, args.port, __version__, args.data_dir)
+            if decision is None:
+                # Same build, same store: attach to what is already serving.
+                existing = ctypes.windll.user32.FindWindowW(None, "Stage Relay")
+                if existing:
+                    ctypes.windll.user32.ShowWindow(existing, 9)
+                    ctypes.windll.user32.SetForegroundWindow(existing)
+                return
+            raise RuntimeError(decision)
         else:
             threading.Thread(target=server.serve_forever,daemon=True,name="StageRelayLocal").start()
             logging.getLogger(__name__).warning("panel data dir: %s", args.data_dir)
@@ -125,15 +162,22 @@ def main():
     except Exception as error:
         logging.exception("Desktop startup failed")
         if os.name == "nt":
-            # Only blame WebView2 when WebView2 is actually the problem. Saying it
-            # for every failure sent the user looking for a runtime that was already
-            # installed, while the real cause was a port conflict.
-            webview_missing = isinstance(error, ImportError) and "webview" in str(error).lower()
-            if webview_missing:
-                message = ("应用启动失败：缺少 Windows WebView2 Runtime。\n\n"
-                           f"本地日志：{args.data_dir / 'desktop.log'}")
-            elif isinstance(error, RuntimeError) and str(error).startswith("端口"):
+            # A failure importing the `webview` module does not prove the Windows
+            # WebView2 Runtime is absent: that module is a Python package, and a
+            # corrupted install, a missing dependency of it, or a packaging error
+            # all raise ImportError too. Show the original error and keep the
+            # runtime check separate from the diagnosis.
+            if isinstance(error, RuntimeError) and str(error).startswith("端口"):
                 message = str(error)
+            elif isinstance(error, ImportError):
+                message = (f"应用启动失败：无法导入 Python 界面模块 webview。\n\n"
+                           f"原始错误：{error}\n\n"
+                           f"这不一定是缺少 Windows WebView2 Runtime —— 该模块是 Python 包，"
+                           f"安装损坏或打包缺文件也会给出同样的错误。\n"
+                           f"如需确认运行时是否存在，请检查注册表项：\n"
+                           f"  HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\"
+                           f"{{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}}\n\n"
+                           f"本地日志：{args.data_dir / 'desktop.log'}")
             else:
                 message = (f"应用启动失败：{error}\n\n"
                            f"本地日志：{args.data_dir / 'desktop.log'}")
