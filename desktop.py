@@ -66,7 +66,12 @@ def main():
                 if running_dir and Path(running_dir).resolve()!=args.data_dir:
                     ctypes.windll.user32.MessageBoxW(None,f'端口 {args.port} 上的 Stage Relay 加载的数据目录与本次不同。\n\n正在运行：\n{running_dir}\n\n本次请求：\n{args.data_dir}\n\n继续打开只会显示正在运行那个实例的数据。要换目录请先用 --data-dir 指定同一路径。','Stage Relay',0x40)
                 if version != __version__:
-                    ctypes.windll.user32.MessageBoxW(None,'已有另一个版本的 Stage Relay 正在运行。请先关闭旧版窗口，再打开新版。旧版任务和文件会保留。','Stage Relay',0x40)
+                    ctypes.windll.user32.MessageBoxW(None,
+                        f'已有另一个版本的 Stage Relay 正在运行。\n\n'
+                        f'正在运行：版本 {version}，端口 {args.port}，数据目录 {running_dir}\n'
+                        f'本次打开：版本 {__version__}\n\n'
+                        f'请先关闭旧版窗口，再打开新版。旧版任务和文件会保留；'
+                        f'本应用不会自动结束它。','Stage Relay',0x40)
                     return
                 existing = ctypes.windll.user32.FindWindowW(None, "Stage Relay")
                 if existing:
@@ -80,15 +85,35 @@ def main():
         try:
             server = PanelServer(("127.0.0.1",args.port),store,connection_home=args.app_home)
         except OSError:
-            with urlopen(url + "/api/health",timeout=3) as response:
-                health=json.load(response)
-                if health.get("app") != "stage-relay":
-                    raise RuntimeError("本地端口被其他应用占用。")
-                if health.get('version') != __version__:
-                    raise RuntimeError('旧版本地服务正在运行，请先关闭旧版再启动新版。')
-                running_dir=health.get('data_dir')
-                if running_dir and Path(running_dir).resolve()!=args.data_dir:
-                    raise RuntimeError(f'端口 {args.port} 已被另一个 Stage Relay 占用，它加载的是：\n{running_dir}\n本次请求的是：\n{args.data_dir}')
+            # The port is taken. Find out by what before saying anything: the old
+            # message said "close the old version" without naming it, so a user who
+            # had just installed a new build had no way to tell which window, process
+            # or data directory was in the way.
+            try:
+                with urlopen(url + "/api/health",timeout=3) as response:
+                    health=json.load(response)
+            except (OSError, ValueError) as error:
+                raise RuntimeError(
+                    f'端口 {args.port} 已被占用，但无法读取它的健康信息（{error}）。\n'
+                    f'占用者不是本应用的正常实例，或正在启动中。\n\n'
+                    f'本次版本：{__version__}\n本次数据目录：{args.data_dir}') from error
+            if health.get("app") != "stage-relay":
+                raise RuntimeError(
+                    f'端口 {args.port} 被其他应用占用（app={health.get("app")!r}）。\n\n'
+                    f'本次版本：{__version__}')
+            raise RuntimeError(
+                f'端口 {args.port} 已被另一个 Stage Relay 实例占用。\n\n'
+                f'正在运行：\n'
+                f'  版本     {health.get("version")}\n'
+                f'  PID      {health.get("pid")}\n'
+                f'  端口     {args.port}\n'
+                f'  数据目录 {health.get("data_dir")}\n\n'
+                f'本次启动：\n'
+                f'  版本     {__version__}\n'
+                f'  端口     {args.port}\n'
+                f'  数据目录 {args.data_dir}\n\n'
+                f'请先关闭上面列出的那个实例再启动本次版本；任务和文件都会保留。\n'
+                f'本应用不会自动结束它。')
         else:
             threading.Thread(target=server.serve_forever,daemon=True,name="StageRelayLocal").start()
             logging.getLogger(__name__).warning("panel data dir: %s", args.data_dir)
@@ -97,10 +122,22 @@ def main():
         api = DesktopAPI()
         api._window = webview.create_window("Stage Relay", url, width=1640, height=980, min_size=(1080,720), background_color="#f7f7f6", text_select=True,js_api=api)
         webview.start(gui="edgechromium",debug=False,private_mode=False,storage_path=str(args.data_dir / "webview"),icon=str(Path(__file__).resolve().parent / "web/assets/relay.ico"))
-    except Exception:
+    except Exception as error:
         logging.exception("Desktop startup failed")
         if os.name == "nt":
-            ctypes.windll.user32.MessageBoxW(None, f"应用启动失败。请查看本地日志：\n{args.data_dir / 'desktop.log'}\n\n此应用需要 Windows WebView2 Runtime。", "Stage Relay", 0x10)
+            # Only blame WebView2 when WebView2 is actually the problem. Saying it
+            # for every failure sent the user looking for a runtime that was already
+            # installed, while the real cause was a port conflict.
+            webview_missing = isinstance(error, ImportError) and "webview" in str(error).lower()
+            if webview_missing:
+                message = ("应用启动失败：缺少 Windows WebView2 Runtime。\n\n"
+                           f"本地日志：{args.data_dir / 'desktop.log'}")
+            elif isinstance(error, RuntimeError) and str(error).startswith("端口"):
+                message = str(error)
+            else:
+                message = (f"应用启动失败：{error}\n\n"
+                           f"本地日志：{args.data_dir / 'desktop.log'}")
+            ctypes.windll.user32.MessageBoxW(None, message, "Stage Relay", 0x10)
         else:
             raise
     finally:
