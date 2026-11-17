@@ -38,6 +38,14 @@ python build_desktop.py
 
 输出到 `release/StageRelay-<版本>-codex-dsh/`，生成带独立窗口的 `Stage Relay.exe`、协作桥 `StageRelayBridge.exe` 和随附运行环境，目标机器不需要安装 Python。桌面窗口使用 Microsoft WebView2 Runtime。`release/`、`build/` 与本机 `data/` 都不入库。
 
+在 Windows 上，可以从仓库根目录运行以下命令创建桌面上的 **Stage Relay** 快捷方式。双击图标或按 **Ctrl + Alt + R** 启动桌面版。将示例路径换成实际的 `Stage Relay.exe` 路径。
+
+```powershell
+.\New-StageRelayShortcut.ps1 -ExePath '.\release\StageRelay-0.1.5\Stage Relay\Stage Relay.exe'
+```
+
+如果平时使用明确指定的数据目录，创建快捷方式时也传入 `-DataDir`，例如 `-DataDir '.\data-live'`。该目录须已存在并包含 `workspace.sqlite3`。升级后用新 EXE 路径重新运行命令即可更新桌面快捷方式。
+
 ## 建立自己的任务
 
 1. 新建任务，填写目标，选择或新建工作区文件夹，再指定方案监督、执行、汇总负责人。
