@@ -5,6 +5,30 @@ import {join} from 'node:path';
 export const name = 'stage-relay-native';
 export const inject = ['agents', 'sessions', 'sessionController', 'llm'];
 
+export async function withSessionModel(ctx, agent, requested, submit) {
+  const controller = ctx.sessionController;
+  if (typeof controller.agents?.serializeImageAdmission !== 'function' ||
+      typeof controller.commands?.requireModel !== 'function' ||
+      (typeof agent.model?.select !== 'function' && typeof controller.agents.selectForNextRequest !== 'function')) {
+    throw new Error('This DSH version does not support session-local model selection');
+  }
+  await controller.commands.requireModel(requested);
+  const resolved = await ctx.llm.resolveCallConfig(requested);
+  const selection = {provider: resolved.provider, model: resolved.model};
+  if (resolved.reasoningEffort) selection.reasoningEffort = resolved.reasoningEffort;
+  return controller.agents.serializeImageAdmission(agent, async () => {
+    if (ctx.agents.get(agent.id) !== agent || agent.status === 'running') {
+      throw new Error('Native session is no longer idle');
+    }
+    // The current DSH controller uses agent.model.select internally, then
+    // saves the global default separately. Only select on this session.
+    if (typeof agent.model?.select === 'function') agent.model.select(selection);
+    else await controller.agents.selectForNextRequest(agent, selection);
+    submit?.();
+    return selection;
+  });
+}
+
 export async function apply(ctx, config) {
   if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(config.panelUrl)) throw new Error('Stage Relay requires a loopback panel URL');
   const {createUserMessage} = await import(pathToFileURL(join(config.runtimeRoot,'node_modules/@deepseek-ai/dsh-llm/lib/index.js')).href);
@@ -51,10 +75,10 @@ export async function apply(ctx, config) {
         const header=agent.session.requestHeader?.();
         // Read the original controller's existing cache without installing a
         // selection on unrelated or child agents.
-        const next=ctx.sessionController.agents?.selections?.get(agent)?.current;
+        const next=agent.model?.current?.() ?? ctx.sessionController.agents?.selections?.get(agent)?.current;
         return {id:agent.id,title:agent.session.header.title || agent.id,workspace:agent.session.header.cwd || '',status:agent.status,model:header?.config?.model || null,provider:header?.config?.provider || null,nextModel:next?.model || null,nextProvider:next?.provider || null,modelSource:header ? 'native-request-header' : 'unconfirmed'};
       });
-      const result=await rpc('runtime_poll',{app:'dsh',sessions});
+      const result=await rpc('runtime_poll',{app:'dsh',sessions,project_model_selection:true});
       observed=new Set(result.observed_sessions);
       const nextPaused=new Set(result.paused_sessions || []);
       for(const id of nextPaused) {
@@ -91,17 +115,7 @@ export async function apply(ctx, config) {
             } else {
               const agent=ctx.agents.get(job.session);
               if(!agent || agent.status==='running') throw new Error('Native session is not idle');
-              const controller=ctx.sessionController;
-              if(!controller.commands?.requireModel || !controller.agents?.selectForNextRequest) throw new Error('This DSH version does not support session-local model selection');
-              // An explicitly requested effort is validated by resolveCallConfig
-              // below: DSH rejects one the route does not support rather than
-              // silently clamping it, and that rejection becomes a failed receipt.
-              await controller.commands.requireModel(job.selection);
-              const resolved=await ctx.llm.resolveCallConfig(job.selection);
-              const selected={provider:resolved.provider,model:resolved.model};
-              if(resolved.reasoningEffort) selected.reasoningEffort=resolved.reasoningEffort;
-              await controller.agents.serializeImageAdmission(agent,async()=>controller.agents.selectForNextRequest(agent,selected));
-              outcome={selected};
+              outcome={selected:await withSessionModel(ctx,agent,job.selection)};
             }
           } catch(error) {
             await rpc('runtime_receipt',{id:job.id,status:'failed',detail:String(error)});
@@ -133,7 +147,9 @@ export async function apply(ctx, config) {
         try {
           if(!agent) throw new Error('The bound native session is no longer loaded');
           const input=createUserMessage({content:[{type:'text',text:job.prompt}],source:{kind:'user'}});
-          if(job.mode==='steer') agent.steer(input);
+          if (job.model_selection) {
+            await withSessionModel(ctx,agent,job.model_selection,()=>agent.followup(input));
+          } else if(job.mode==='steer') agent.steer(input);
           else agent.followup(input);
         } catch(error) {
           await rpc('runtime_receipt',{id:job.id,status:'failed',detail:String(error)});
@@ -141,7 +157,7 @@ export async function apply(ctx, config) {
         }
         // A lost receipt after followup is uncertain, never a failed enqueue.
         // The panel's expired lease prevents automatic duplicate execution.
-        await rpc('runtime_receipt',{id:job.id,status:'delivered',detail:`Enqueued through the existing DSH agent.${job.mode==='steer' ? 'steer' : 'followup'}()`});
+        await rpc('runtime_receipt',{id:job.id,status:'delivered',detail:`Enqueued through the existing DSH agent.${!job.model_selection && job.mode==='steer' ? 'steer' : 'followup'}()`});
       }
     } catch { /* Panel outages must not interrupt the original application. */ }
     finally {busy=false;}
